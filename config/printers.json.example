@@ -1,0 +1,20 @@
+{
+  "node_bay_01": {
+    "id": "node_bay_01",
+    "name": "Printer-Bay-01",
+    "ip": "192.168.1.151",
+    "sn": "00M00A000000000",
+    "access_code": "12345678",
+    "bed_type": "textured_pei",
+    "ams_count": 1
+  },
+  "node_bay_02": {
+    "id": "node_bay_02",
+    "name": "Printer-Bay-02",
+    "ip": "192.168.1.152",
+    "sn": "00M00B000000000",
+    "access_code": "87654321",
+    "bed_type": "cool_plate",
+    "ams_count": 4
+  }
+}

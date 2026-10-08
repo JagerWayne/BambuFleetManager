@@ -1,0 +1,15 @@
+{
+    "name":  "bambu-fleet-manager-assets",
+    "version":  "1.0.0",
+    "private":  true,
+    "description":  "Build tooling for the vendored offline Tailwind bundle. Not required to run the server.",
+    "scripts":  {
+                    "build:css":  "tailwindcss -i assets/tailwind.src.css -o static/css/tailwind.min.css --minify",
+                    "test:ui":  "node tests/js/dom_temp_test.js \u0026\u0026 node tests/js/dom_motion_test.js \u0026\u0026 node tests/js/dom_theme_test.js \u0026\u0026 node tests/js/dom_files_test.js \u0026\u0026 node tests/js/dom_ams_test.js"
+                },
+    "devDependencies":  {
+                            "@tailwindcss/cli":  "^4.1.0",
+                            "tailwindcss":  "^4.1.0",
+                            "jsdom":  "^24.0.0"
+                        }
+}
