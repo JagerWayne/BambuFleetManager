@@ -228,3 +228,76 @@ def test_rtsp_url_accepts_a_custom_port():
     assert c.rtsp_url("10.0.0.9", "code", 8554) == \
         "rtsps://bblp:code@10.0.0.9:8554/streaming/live/1"
     assert ":322/" in c.rtsp_url("10.0.0.9", "code")
+
+
+# --------------------------------------------------------------- no console
+# The tray exe is windowed (console=False in the PyInstaller spec), so Windows
+# hands every ffmpeg child its own console window unless CREATE_NO_WINDOW is
+# passed. Both spawn sites must set it.
+
+
+def test_hidden_creation_flags_is_no_window_on_windows(monkeypatch):
+    from backend import camera as c
+
+    monkeypatch.setattr(c.sys, "platform", "win32")
+    assert c.hidden_creation_flags() == c.subprocess.CREATE_NO_WINDOW
+
+
+def test_hidden_creation_flags_is_zero_elsewhere(monkeypatch):
+    from backend import camera as c
+
+    for platform in ("linux", "darwin"):
+        monkeypatch.setattr(c.sys, "platform", platform)
+        assert c.hidden_creation_flags() == 0
+
+
+def test_mjpeg_stream_hides_the_ffmpeg_console(monkeypatch):
+    from backend import camera as c
+
+    seen = {}
+
+    class FakeOut:
+        def read(self, _n=None):
+            return b""
+
+    class FakeProc:
+        stdout = FakeOut()
+        terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def fake_popen(args, **kwargs):
+        seen.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(c, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(c.subprocess, "Popen", fake_popen)
+
+    assert list(c.ffmpeg_mjpeg_stream("10.0.0.9", "code")) == []
+    assert seen["creationflags"] == c.hidden_creation_flags()
+
+
+def test_snapshot_hides_the_ffmpeg_console(monkeypatch):
+    from backend import camera as c
+
+    seen = {}
+
+    class Result:
+        stdout = b"\xff\xd8jpegdata"
+
+    def fake_run(args, **kwargs):
+        seen.update(kwargs)
+        return Result()
+
+    monkeypatch.setattr(c, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(c.subprocess, "run", fake_run)
+
+    assert c.ffmpeg_snapshot("10.0.0.9", "code") == b"\xff\xd8jpegdata"
+    assert seen["creationflags"] == c.hidden_creation_flags()

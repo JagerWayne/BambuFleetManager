@@ -21,6 +21,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import urllib.parse
 from typing import Iterator, Optional, Tuple
 
@@ -61,6 +62,19 @@ def ffmpeg_exe() -> Optional[str]:
         return shutil.which("ffmpeg")
 
 
+def hidden_creation_flags() -> int:
+    """``creationflags`` that keep ffmpeg from flashing a console window.
+
+    The tray app ships as a windowed (GUI subsystem) exe, so it owns no console
+    of its own. Without this flag Windows gives every ffmpeg child a brand-new
+    visible console window while a camera is streaming. Harmless elsewhere, so
+    the flag is zero everywhere except Windows.
+    """
+    if sys.platform != "win32":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def rtsp_url(ip: str, access_code: str, port: int = RTSP_PORT) -> str:
     """The URL form the printer documents for local streaming."""
     user = urllib.parse.quote(RTSP_USER)
@@ -97,7 +111,11 @@ def ffmpeg_mjpeg_stream(
             "-q:v", "7", "-f", "mpjpeg", "-"]
 
     process = subprocess.Popen(
-        args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=hidden_creation_flags(),
     )
     try:
         assert process.stdout is not None
@@ -129,7 +147,12 @@ def ffmpeg_snapshot(ip: str, access_code: str, width: int = 1280, port: int = RT
             "-frames:v", "1", "-vf", f"scale={width}:-2",
             "-q:v", "4", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
     try:
-        result = subprocess.run(args, capture_output=True, timeout=FFMPEG_TIMEOUT)
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            timeout=FFMPEG_TIMEOUT,
+            creationflags=hidden_creation_flags(),
+        )
         if result.stdout.startswith(SOI):
             return result.stdout
         logger.debug("ffmpeg snapshot produced no JPEG (%d bytes)", len(result.stdout))
