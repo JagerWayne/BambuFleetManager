@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>Bambu Fleet Manager</title>
   <script>
@@ -22,294 +22,338 @@
   </script>
   <link rel="stylesheet" href="/static/css/tailwind.min.css">
 </head>
-<body class="min-h-screen t-body font-sans antialiased">
+<body class="t-body font-sans antialiased">
 
-  <!-- ===================================================== top bar -->
-  <header class="sticky top-0 z-40 border-b line app-header backdrop-blur-xl">
-    <div class="mx-auto flex max-w-[1600px] flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
+<!-- ============================================================= app shell
+     .app-shell   : flex column, capped at --shell-max, min 100dvh
+     .app-topbar  : sticky top bar (brand · status · actions)
+     .app-body    : grid  ->  [ rail | main ] from 1024px, stacked below
+     .app-actions : inline toolbar on desktop, fixed bottom navigation bar
+                    below 1024px (thumb zone) - the same DOM nodes.
+     ===================================================================== -->
+<div class="app-shell">
 
-      <div class="flex items-center gap-3">
-        <div class="brand-mark grid h-10 w-10 place-items-center rounded-xl">
-          <svg class="h-5 w-5 fill-current" viewBox="0 0 24 24"><path d="M19 8l-7-4-7 4v8l7 4 7-4V8zm-7 2.15L16.7 8 12 5.3 7.3 8 12 10.15zm-5 1.73l4 2.29v4.54l-4-2.29v-4.54zm6 6.83v-4.54l4-2.29v4.54l-4 2.29z"/></svg>
-        </div>
-        <div class="leading-tight">
-          <h1 class="text-sm font-extrabold tracking-wide t-strong">BAMBU <span class="t-accent">FLEET MANAGER</span></h1>
-          <p class="font-mono text-[10px] t-mut">MQTTS 8883 · FTPS 990 · RTSP 322 · LAN only</p>
-        </div>
+  <!-- ======================================================== top bar -->
+  <header class="app-topbar" role="banner">
+    <div class="brand">
+      <div class="brand-mark grid h-10 w-10 shrink-0 place-items-center rounded-xl">
+        <svg class="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8l-7-4-7 4v8l7 4 7-4V8zm-7 2.15L16.7 8 12 5.3 7.3 8 12 10.15zm-5 1.73l4 2.29v4.54l-4-2.29v-4.54zm6 6.83v-4.54l4-2.29v4.54l-4 2.29z"/></svg>
       </div>
-
-      <!-- fleet vitals -->
-      <div class="order-3 flex flex-1 items-center gap-2 sm:order-none sm:justify-center">
-        <div class="flex items-stretch gap-1 rounded-2xl border line surface px-3 py-1.5 font-mono">
-          <div class="px-2 text-center">
-            <span class="block text-[9px] uppercase tracking-wider t-mut">Online</span>
-            <span id="v-online" class="text-sm font-bold t-ok">0</span>
-          </div>
-          <div class="w-px surface-3"></div>
-          <div class="px-2 text-center">
-            <span class="block text-[9px] uppercase tracking-wider t-mut">Printing</span>
-            <span id="v-printing" class="text-sm font-bold t-accent">0</span>
-          </div>
-          <div class="w-px surface-3"></div>
-          <div class="px-2 text-center">
-            <span class="block text-[9px] uppercase tracking-wider t-mut">Idle</span>
-            <span id="v-idle" class="text-sm font-bold t-info">0</span>
-          </div>
-          <div class="w-px surface-3"></div>
-          <div class="px-2 text-center">
-            <span class="block text-[9px] uppercase tracking-wider t-mut">Errors</span>
-            <span id="v-error" class="text-sm font-bold t-danger">0</span>
-          </div>
-        </div>
+      <div class="brand-text">
+        <h1 class="brand-title">BAMBU <span class="t-accent">FLEET MANAGER</span></h1>
+        <p class="brand-sub">MQTTS 8883 · FTPS 990 · RTSP 322 · LAN only</p>
       </div>
+    </div>
 
-      <div class="ml-auto flex items-center gap-2">
+    <div class="topbar-right">
+      <div class="topbar-status">
         <span id="ws-badge" class="chip t-mut">
           <span class="h-1.5 w-1.5 rounded-full bg-slate-500"></span> connecting
         </span>
-        <input id="fleet-filter" type="search" placeholder="Filter nodes…" autocomplete="off"
-               class="field hidden w-44 sm:block">
-        <button id="collapse-all" class="btn btn-ghost hidden sm:inline-flex">Collapse</button>
-        <span id="motion-badge" title="Machine moves are unlocked — no per-action confirmation"
-              class="chip chip-warn hidden">moves unlocked</span>
-        <button id="theme-toggle" class="icon-btn" title="Switch light / dark theme" aria-label="Toggle theme">
-          <span id="theme-icon">🌙</span>
+        <span id="motion-badge" class="chip chip-warn hidden"
+              title="Machine moves are unlocked — no per-action confirmation">moves unlocked</span>
+      </div>
+
+      <div class="app-actions">
+        <button id="theme-toggle" class="icon-btn nav-item" title="Switch light / dark theme" aria-label="Toggle theme">
+          <span id="theme-icon" aria-hidden="true">🌙</span>
+          <span class="nav-label">Theme</span>
         </button>
-        <button id="cam-toggle" class="icon-btn" title="Cameras on" aria-label="Toggle cameras">📷</button>
-        <button id="open-settings" class="icon-btn" title="Server settings" aria-label="Settings">⚙</button>
-        <button id="add-printer" class="btn btn-primary">
-          <svg class="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-          Add node
+        <button id="cam-toggle" class="icon-btn nav-item" title="Cameras on" aria-label="Toggle cameras">
+          <span aria-hidden="true">📷</span>
+          <span class="nav-label">Camera</span>
+        </button>
+        <button id="open-settings" class="icon-btn nav-item" title="Server settings" aria-label="Settings">
+          <span aria-hidden="true">⚙</span>
+          <span class="nav-label">Settings</span>
+        </button>
+        <button id="add-printer" class="btn btn-primary nav-item">
+          <svg class="h-3.5 w-3.5 shrink-0 fill-current" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+          <span class="nav-label">Add node</span>
         </button>
       </div>
     </div>
   </header>
 
-  <main class="mx-auto max-w-[1600px] space-y-5 px-4 py-5 sm:px-6">
+  <!-- ================================================ body: rail + main -->
+  <div class="app-body">
 
-    <!-- =============================================== staging queue -->
-    <section class="card p-4 sm:p-5">
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h2 class="text-xs font-bold uppercase tracking-wider t-strong">Staging queue</h2>
-          <p class="text-[11px] t-mut">Drop a sliced project here, then drag it onto a printer card to start it.</p>
-        </div>
-        <span id="staged-count" class="chip border line surface-2 t-mut">0 files</span>
-      </div>
-      <div class="grid grid-cols-1 gap-3 lg:grid-cols-4">
-        <div id="drop-zone"
-             class="drop-zone grid min-h-[104px] cursor-pointer place-items-center rounded-xl border-2 border-dashed line surface-2 p-4 text-center transition hover:line-accent">
-          <input type="file" id="file-input" class="hidden" accept=".3mf,.gcode" multiple>
-          <div>
-            <svg class="mx-auto mb-1 h-6 w-6 t-mut" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-            </svg>
-            <span class="text-xs font-bold t-body">Drop or click to stage</span>
-            <span class="mt-0.5 block font-mono text-[10px] t-mut">.3mf / .gcode.3mf</span>
+    <!-- ------------------------------------------ fleet rail / sidebar -->
+    <aside class="app-rail" aria-label="Fleet overview">
+      <section class="rail-card">
+        <h2 class="rail-title">Fleet status</h2>
+        <div class="vitals">
+          <div class="vital">
+            <span class="vital-label">Online</span>
+            <span id="v-online" class="vital-value t-ok">0</span>
+          </div>
+          <div class="vital">
+            <span class="vital-label">Printing</span>
+            <span id="v-printing" class="vital-value t-accent">0</span>
+          </div>
+          <div class="vital">
+            <span class="vital-label">Idle</span>
+            <span id="v-idle" class="vital-value t-info">0</span>
+          </div>
+          <div class="vital">
+            <span class="vital-label">Errors</span>
+            <span id="v-error" class="vital-value t-danger">0</span>
           </div>
         </div>
-        <div id="staged-container" class="grid max-h-[104px] grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-3 lg:col-span-3"></div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ==================================================== fleet grid -->
-    <div id="fleet-grid" class="grid grid-cols-1 gap-4"></div>
-  </main>
+      <section class="rail-card">
+        <label class="rail-title" for="fleet-filter">Filter nodes</label>
+        <input id="fleet-filter" type="search" placeholder="Name, IP or serial…"
+               autocomplete="off" class="field">
+        <button id="collapse-all" class="btn btn-ghost w-full">Collapse all</button>
+      </section>
 
-  <footer class="mt-6 border-t line py-4 text-center font-mono text-[10px] t-dim">
-    Bambu Fleet Manager v<span id="app-version">…</span> · self-hosted, no cloud dependency
-  </footer>
+      <p class="rail-note">
+        Printers are reached directly on the LAN.<br>
+        Nothing leaves this machine.
+      </p>
+    </aside>
 
-  <!-- ================================================= add-node modal -->
-  <div id="modal-printer" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-    <div class="card w-full max-w-md p-6">
-      <h3 id="modal-title" class="mb-1 text-base font-bold t-strong">Register printer node</h3>
-      <p id="modal-subtitle" class="mb-4 font-mono text-[10px] t-mut">Credentials stay on this host.</p>
-      <form id="printer-form" class="space-y-3">
-        <input type="hidden" id="form-id">
-        <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Friendly name</label>
-          <input id="form-name" required placeholder="Printer-Bay-1" class="field">
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="mb-1 block text-[11px] font-medium t-mut">IP address</label>
-            <input id="form-ip" required placeholder="192.168.0.80" class="field">
+    <!-- ------------------------------------------------ main canvas -->
+    <main class="app-main">
+
+      <!-- =========================================== staging queue -->
+      <section class="card staging" aria-label="Staging queue">
+        <div class="section-head">
+          <div class="section-head-text">
+            <h2 class="section-title">Staging queue</h2>
+            <p class="section-sub">Drop a sliced project here, then drag it onto a printer card to start it.</p>
           </div>
-          <div>
-            <label class="mb-1 block text-[11px] font-medium t-mut">Serial number</label>
-            <input id="form-sn" required placeholder="00M00A…" class="field uppercase">
-          </div>
+          <span id="staged-count" class="chip border line surface-2 t-mut">0 files</span>
         </div>
-        <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Access code</label>
-          <input id="form-code" required placeholder="8 characters" class="field">
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="mb-1 block text-[11px] font-medium t-mut">Bed type</label>
-            <select id="form-bed-type" class="field">
-              <option value="textured_pei">textured PEI</option>
-              <option value="smooth_pei">smooth PEI</option>
-              <option value="cool_plate">cool plate</option>
-              <option value="engineering_plate">engineering plate</option>
-              <option value="textured_pei_high_temp">PEI high temp</option>
-            </select>
+
+        <div class="staging-grid">
+          <div id="drop-zone" class="drop-zone">
+            <input type="file" id="file-input" class="hidden" accept=".3mf,.gcode" multiple>
+            <div class="drop-inner">
+              <svg class="mx-auto mb-1 h-6 w-6 t-mut" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+              <span class="drop-title">Drop or click to stage</span>
+              <span class="drop-sub">.3mf / .gcode</span>
+            </div>
           </div>
-          <div>
-            <label class="mb-1 block text-[11px] font-medium t-mut">AMS units</label>
-            <input id="form-ams" type="number" min="0" max="16" value="1" class="field">
-          </div>
+          <div id="staged-container" class="staged-list"></div>
         </div>
-        <div class="flex items-center justify-between gap-2 pt-2">
-          <button type="button" id="modal-delete" class="btn btn-danger hidden">Remove node</button>
-          <div class="ml-auto flex gap-2">
-            <button type="button" id="modal-cancel" class="btn btn-ghost">Cancel</button>
-            <button type="submit" id="modal-save" class="btn btn-primary">Save node</button>
-          </div>
-        </div>
-      </form>
-    </div>
+      </section>
+
+      <!-- =========================================== fleet grid -->
+      <div id="fleet-grid" class="fleet-grid"></div>
+    </main>
   </div>
 
-  <!-- =============================================== speed modal -->
-  <div id="modal-speed" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-    <div class="card w-full max-w-sm p-5">
-      <h3 class="mb-1 text-base font-bold t-strong">Speed profile</h3>
-      <p id="speed-modal-sub" class="mb-4 font-mono text-[10px] t-mut"></p>
-      <div id="speed-options" class="grid grid-cols-2 gap-2"></div>
-      <div class="mt-4 flex justify-end">
+  <footer class="app-footer">
+    <p class="app-footer-text">
+      Bambu Fleet Manager v<span id="app-version">…</span> · self-hosted, no cloud dependency
+    </p>
+  </footer>
+</div>
+
+<div id="toasts" class="toast-stack" aria-live="polite"></div>
+
+<!-- =================================================== add-node modal -->
+<div id="modal-printer" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-md p-5 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title" class="mb-1 text-base font-bold t-strong">Register printer node</h3>
+    <p id="modal-subtitle" class="mb-4 font-mono text-[10px] t-mut">Credentials stay on this host.</p>
+    <form id="printer-form" class="space-y-3">
+      <input type="hidden" id="form-id">
+      <div>
+        <label class="field-label" for="form-name">Friendly name</label>
+        <input id="form-name" required placeholder="Printer-Bay-1" class="field">
+      </div>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label class="field-label" for="form-ip">IP address</label>
+          <input id="form-ip" required placeholder="192.168.0.80" class="field" inputmode="decimal">
+        </div>
+        <div>
+          <label class="field-label" for="form-sn">Serial number</label>
+          <input id="form-sn" required placeholder="00M00A…" class="field uppercase">
+        </div>
+      </div>
+      <div>
+        <label class="field-label" for="form-code">Access code</label>
+        <input id="form-code" required placeholder="8 characters" class="field">
+      </div>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label class="field-label" for="form-bed-type">Bed type</label>
+          <select id="form-bed-type" class="field">
+            <option value="textured_pei">textured PEI</option>
+            <option value="smooth_pei">smooth PEI</option>
+            <option value="cool_plate">cool plate</option>
+            <option value="engineering_plate">engineering plate</option>
+            <option value="textured_pei_high_temp">PEI high temp</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label" for="form-ams">AMS units</label>
+          <input id="form-ams" type="number" min="0" max="16" value="1" inputmode="numeric" class="field">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="modal-delete" class="btn btn-danger hidden">Remove node</button>
+        <div class="modal-actions-end">
+          <button type="button" id="modal-cancel" class="btn btn-ghost">Cancel</button>
+          <button type="submit" id="modal-save" class="btn btn-primary">Save node</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ==================================================== speed modal -->
+<div id="modal-speed" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-sm p-5" role="dialog" aria-modal="true" aria-labelledby="speed-heading">
+    <h3 id="speed-heading" class="mb-1 text-base font-bold t-strong">Speed profile</h3>
+    <p id="speed-modal-sub" class="mb-4 font-mono text-[10px] t-mut"></p>
+    <div id="speed-options" class="grid grid-cols-2 gap-2"></div>
+    <div class="modal-actions">
+      <div class="modal-actions-end">
         <button type="button" id="speed-cancel" class="btn btn-ghost">Close</button>
       </div>
     </div>
   </div>
+</div>
 
-  <!-- =============================================== print preview -->
-  <div id="modal-print" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-    <div class="card max-h-[92vh] w-full max-w-3xl overflow-y-auto p-5">
-      <div class="mb-3 flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <h3 class="text-base font-bold t-strong">Print preview</h3>
-          <p id="print-sub" class="truncate font-mono text-[10px] t-mut"></p>
+<!-- ================================================ print preview -->
+<div id="modal-print" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-3xl p-5" role="dialog" aria-modal="true" aria-labelledby="print-heading">
+    <div class="mb-3 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 id="print-heading" class="text-base font-bold t-strong">Print preview</h3>
+        <p id="print-sub" class="truncate font-mono text-[10px] t-mut"></p>
+      </div>
+      <button type="button" id="print-close" class="icon-btn shrink-0" aria-label="Close">✕</button>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <div class="plate-frame">
+          <img id="print-img" alt="plate preview" class="hidden h-full w-full object-contain">
+          <div id="print-img-loading" class="font-mono text-[11px] t-dim">loading preview…</div>
         </div>
-        <button type="button" id="print-close" class="icon-btn" aria-label="Close">✕</button>
+        <div id="print-plates" class="mt-2 flex flex-wrap gap-2"></div>
       </div>
 
-      <div class="grid gap-4 md:grid-cols-2">
+      <div class="space-y-3">
+        <div id="print-info" class="tile p-3 font-mono text-[11px] t-body"></div>
         <div>
-          <div class="grid aspect-square place-items-center overflow-hidden rounded-xl border line surface-2">
-            <img id="print-img" alt="plate preview" class="hidden h-full w-full object-contain">
-            <div id="print-img-loading" class="font-mono text-[11px] t-dim">loading preview…</div>
-          </div>
-          <div id="print-plates" class="mt-2 flex flex-wrap gap-2"></div>
+          <p class="mb-1.5 text-[10px] uppercase tracking-wider t-mut">Filament mapping</p>
+          <div id="print-filaments" class="space-y-2"></div>
         </div>
-
-        <div class="space-y-3">
-          <div id="print-info" class="tile p-3 font-mono text-[11px] t-body"></div>
-          <div>
-            <p class="mb-1.5 text-[10px] uppercase tracking-wider t-mut">Filament mapping</p>
-            <div id="print-filaments" class="space-y-2"></div>
-          </div>
-          <div id="print-options" class="tile space-y-1.5 p-3 font-mono text-[11px] t-body"></div>
-        </div>
+        <div id="print-options" class="tile space-y-1.5 p-3 font-mono text-[11px] t-body"></div>
       </div>
+    </div>
 
-      <div class="mt-4 flex justify-end gap-2">
+    <div class="modal-actions">
+      <div class="modal-actions-end">
         <button type="button" id="print-cancel" class="btn btn-ghost">Cancel</button>
         <button type="button" id="print-start" class="btn btn-primary">Start print</button>
       </div>
     </div>
   </div>
+</div>
 
-  <!-- =============================================== filament editor -->
-  <div id="modal-filament" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-    <div class="card w-full max-w-sm p-5">
-      <h3 class="mb-1 text-base font-bold t-strong">Edit filament</h3>
-      <p id="filament-sub" class="mb-4 font-mono text-[10px] t-mut"></p>
-      <div class="space-y-3">
+<!-- =============================================== filament editor -->
+<div id="modal-filament" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-sm p-5" role="dialog" aria-modal="true" aria-labelledby="filament-heading">
+    <h3 id="filament-heading" class="mb-1 text-base font-bold t-strong">Edit filament</h3>
+    <p id="filament-sub" class="mb-4 font-mono text-[10px] t-mut"></p>
+    <div class="space-y-3">
+      <div>
+        <label class="field-label" for="filament-type">Material</label>
+        <select id="filament-type" class="field"></select>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Material</label>
-          <select id="filament-type" class="field"></select>
+          <label class="field-label" for="filament-color">Colour</label>
+          <input id="filament-color" type="color" class="field field-color">
         </div>
-        <div class="flex items-center gap-3">
-          <div class="flex-1">
-            <label class="mb-1 block text-[11px] font-medium t-mut">Colour</label>
-            <input id="filament-color" type="color" class="field h-11 w-full p-1">
-          </div>
-          <div class="flex-1">
-            <label class="mb-1 block text-[11px] font-medium t-mut">Remaining %</label>
-            <input id="filament-remaining" type="number" min="0" max="100" class="field">
-          </div>
+        <div>
+          <label class="field-label" for="filament-remaining">Remaining %</label>
+          <input id="filament-remaining" type="number" min="0" max="100" inputmode="numeric" class="field">
         </div>
-        <p id="filament-preset" class="font-mono text-[10px] t-mut"></p>
-        <p class="font-mono text-[10px] t-dim">
-          Writes the tray record only (type/colour/remaining). Bambu spools with RFID may re-read
-          their tag on the next insert.
-        </p>
-        <div class="flex justify-end gap-2 pt-1">
+      </div>
+      <p id="filament-preset" class="font-mono text-[10px] t-mut"></p>
+      <p class="font-mono text-[10px] t-dim">
+        Writes the tray record only (type/colour/remaining). Bambu spools with RFID may re-read
+        their tag on the next insert.
+      </p>
+      <div class="modal-actions">
+        <div class="modal-actions-end">
           <button type="button" id="filament-cancel" class="btn btn-ghost">Cancel</button>
           <button type="button" id="filament-save" class="btn btn-primary">Save to tray</button>
         </div>
       </div>
     </div>
   </div>
+</div>
 
-  <div id="toasts" class="pointer-events-none fixed bottom-4 right-4 z-[70] flex max-w-[92vw] flex-col items-end gap-2 sm:bottom-5 sm:right-5"></div>
-
-  <!-- =============================================== server settings -->
-  <div id="modal-settings" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-    <div class="card w-full max-w-sm p-6">
-      <h3 class="mb-1 text-base font-bold t-strong">Server settings</h3>
-      <p class="mb-4 font-mono text-[10px] t-mut">
-        Applied the next time the server starts. Currently serving on port
-        <span id="settings-current-port" class="t-body">8000</span>.
-      </p>
-      <form id="settings-form" class="space-y-3">
-        <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Listen host</label>
-          <input id="settings-host" class="field" placeholder="0.0.0.0">
-        </div>
-        <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Port</label>
-          <input id="settings-port" type="number" min="1" max="65535" class="field" placeholder="8000">
-        </div>
-        <label class="flex items-start gap-2 rounded-xl border border-warn bg-warn-soft p-2.5 font-mono text-[11px] t-body">
-          <input type="checkbox" id="settings-allow-motion" class="mt-0.5 accent-amber-400">
-          <span>
-            Unlock machine moves — skip the per-action confirmation ticks.
-            <span class="block text-[10px] t-mut">
-              Homing and idle-printer checks still apply. Off is the safe default.
-            </span>
+<!-- =============================================== server settings -->
+<div id="modal-settings" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-sm p-5 sm:p-6" role="dialog" aria-modal="true" aria-labelledby="settings-heading">
+    <h3 id="settings-heading" class="mb-1 text-base font-bold t-strong">Server settings</h3>
+    <p class="mb-4 font-mono text-[10px] t-mut">
+      Applied the next time the server starts. Currently serving on port
+      <span id="settings-current-port" class="t-body">8000</span>.
+    </p>
+    <form id="settings-form" class="space-y-3">
+      <div>
+        <label class="field-label" for="settings-host">Listen host</label>
+        <input id="settings-host" class="field" placeholder="0.0.0.0">
+      </div>
+      <div>
+        <label class="field-label" for="settings-port">Port</label>
+        <input id="settings-port" type="number" min="1" max="65535" inputmode="numeric" class="field" placeholder="8000">
+      </div>
+      <label class="notice notice-warn" for="settings-allow-motion">
+        <input type="checkbox" id="settings-allow-motion" class="mt-0.5 accent-amber-400">
+        <span>
+          Unlock machine moves — skip the per-action confirmation ticks.
+          <span class="block text-[10px] t-mut">
+            Homing and idle-printer checks still apply. Off is the safe default.
           </span>
-        </label>
-        <div>
-          <label class="mb-1 block text-[11px] font-medium t-mut">Access token</label>
-          <input id="settings-token" type="password" class="field" placeholder="blank = keep current">
-          <p id="settings-auth-state" class="mt-1 font-mono text-[10px] t-mut"></p>
-        </div>
-        <label class="flex items-center gap-2 font-mono text-[11px] t-body">
-          <input type="checkbox" id="settings-clear-auth" class="accent-red-400">
-          Remove the token (disable sign-in)
-        </label>
-        <p class="font-mono text-[10px] t-mut">
-          Open the dashboard at <span id="settings-url" class="t-body">http://localhost:8000</span>
-        </p>
-        <div class="flex justify-end gap-2 pt-2">
+        </span>
+      </label>
+      <div>
+        <label class="field-label" for="settings-token">Access token</label>
+        <input id="settings-token" type="password" class="field" placeholder="blank = keep current">
+        <p id="settings-auth-state" class="mt-1 font-mono text-[10px] t-mut"></p>
+      </div>
+      <label class="notice" for="settings-clear-auth">
+        <input type="checkbox" id="settings-clear-auth" class="accent-red-400">
+        Remove the token (disable sign-in)
+      </label>
+      <p class="font-mono text-[10px] t-mut">
+        Open the dashboard at <span id="settings-url" class="t-body">http://localhost:8000</span>
+      </p>
+      <div class="modal-actions">
+        <div class="modal-actions-end">
           <button type="button" id="settings-cancel" class="btn btn-ghost">Cancel</button>
           <button type="submit" class="btn btn-primary">Save</button>
         </div>
-      </form>
-      <div class="mt-3 rounded-xl border p-2.5">
-        <div class="flex items-center justify-between">
-          <span class="text-[11px] font-medium t-mut">Updates</span>
-          <span id="update-current" class="font-mono text-[10px] t-mut"></span>
-        </div>
-        <p id="update-result" class="mt-1 hidden font-mono text-[10px] t-mut"></p>
-        <button type="button" id="update-check" class="btn btn-ghost mt-2 w-full">Check for updates</button>
-        <button type="button" id="update-install" class="btn btn-primary mt-2 hidden w-full">Download &amp; install</button>
       </div>
+    </form>
+
+    <div class="update-box">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[11px] font-medium t-strong">Updates</span>
+        <span id="update-current" class="font-mono text-[10px] t-mut"></span>
+      </div>
+      <p id="update-result" class="mt-1 hidden font-mono text-[10px] t-mut"></p>
+      <button type="button" id="update-check" class="btn btn-ghost mt-2 w-full">Check for updates</button>
+      <button type="button" id="update-install" class="btn btn-primary mt-2 hidden w-full">Download &amp; install</button>
     </div>
   </div>
+</div>
 
   <script src="/static/js/app.js"></script>
 </body>

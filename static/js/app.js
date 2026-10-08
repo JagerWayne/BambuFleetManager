@@ -325,13 +325,13 @@ function renderFleet() {
 function createCard(printer) {
   const root = document.createElement('article');
   root.dataset.cardId = printer.id;
-  root.className = 'card card-enter overflow-hidden lg:h-[560px]';
+  root.className = 'card card-enter overflow-hidden lg:h-[540px] 2xl:h-[600px]';
 
   root.innerHTML = `
     <div class="flex h-full flex-col lg:flex-row">
 
       <!-- left: camera + everything at a glance -->
-      <div class="flex w-full shrink-0 flex-col gap-2 border-b p-3 line surface-2 lg:h-full lg:w-[330px] lg:overflow-y-auto lg:border-b-0 lg:border-r">
+      <div class="card-aside flex shrink-0 flex-col gap-2 border-b p-3 line surface-2 lg:h-full lg:overflow-y-auto lg:border-b-0 lg:border-r">
 
         <div data-role="cam-box"
              class="cam-box relative aspect-video w-full shrink-0 overflow-hidden rounded-lg border line bg-black">
@@ -380,7 +380,7 @@ function createCard(printer) {
             <span class="truncate t-body" data-r="job"></span>
             <span class="shrink-0 font-bold t-accent" data-r="progress"></span>
           </span>
-          <span class="block h-1.5 w-full overflow-hidden rounded-full surface-3">
+          <span class="block h-2 w-full overflow-hidden rounded-full surface-3">
             <span class="block h-full rounded-full bg-gradient-to-r from-bambu-dark to-bambu transition-all duration-500" data-r="bar" style="width:0%"></span>
           </span>
           <span class="mt-1 flex justify-between font-mono text-[10px] t-mut">
