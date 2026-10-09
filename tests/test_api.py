@@ -1,4 +1,7 @@
-"""End-to-end smoke tests for the REST surface and the WebSocket hub."""
+"""End-to-end smoke tests for the REST surface and the WebSocket hub.
+
+The ``client`` / ``node`` fixtures live in tests/conftest.py.
+"""
 
 import asyncio
 import json
@@ -9,68 +12,8 @@ import time
 import zipfile
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend import main as main_module
-
-
-@pytest.fixture()
-def node(client):
-    """A single registered printer node."""
-    client.post(
-        "/api/printers",
-        json={"id": "n1", "name": "Bay 1", "ip": "10.0.0.5", "sn": "SN1", "access_code": "12345678"},
-    )
-    client.sent.clear()
-    return "n1"
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    config_file = tmp_path / "printers.json"
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir()
-    monkeypatch.setattr(main_module, "CONFIG_PATH", str(config_file))
-    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(upload_dir))
-    monkeypatch.setattr(main_module, "mqtt_manager", None)
-    monkeypatch.setattr(main_module, "CALIBRATION_HOME_DELAY", 0)
-    monkeypatch.setattr(main_module, "PRINT_START_VERIFY_DELAY", 0)
-    monkeypatch.setattr(main_module, "STATE_PATH", str(tmp_path / "state.json"))
-    main_module.homed_state.clear()
-    # isolate from the machine-local settings.json (allow_motion etc.)
-    monkeypatch.setattr(main_module, "SETTINGS_PATH", str(tmp_path / "settings.json"))
-    main_module.latest_reports.clear()
-    main_module.homed_state.clear()
-
-    sent: list = []
-
-    class FakeManager:
-        clients = {}
-
-        def register_printer(self, *a, **kw):
-            sent.append(("register", a))
-
-        def unregister_printer(self, *a, **kw):
-            sent.append(("unregister", a))
-
-        def send_payloads(self, p_id, payloads):
-            for payload in payloads:
-                sent.append(("publish", p_id, payload))
-            return True
-
-        def send_to_printer(self, p_id, payload):
-            return self.send_payloads(p_id, [payload])
-
-        def status(self):
-            return {}
-
-        def shutdown(self):
-            pass
-
-    monkeypatch.setattr(main_module, "require_manager", lambda: FakeManager())
-    with TestClient(main_module.app) as test_client:
-        test_client.sent = sent
-        yield test_client
 
 
 def test_dashboard_renders(client):
@@ -87,6 +30,72 @@ def test_static_assets_are_served(client):
 
 def test_version_endpoint(client):
     assert client.get("/VERSION").status_code == 200
+
+
+def test_health_endpoint(client):
+    res = client.get("/health")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["printers"] == 0
+    assert body["mqtt_connected"] == 0
+    assert body["uptime_seconds"] >= 0
+    assert isinstance(body["version"], str) and body["version"]
+
+
+def test_security_headers_are_present(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    csp = res.headers["content-security-policy"]
+    assert "default-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["x-frame-options"] == "DENY"
+    assert res.headers["referrer-policy"] == "no-referrer"
+
+
+def test_diagnostics_redacts_secrets(client, node, tmp_path, monkeypatch):
+    log_dir = tmp_path / "diag"
+    log_dir.mkdir()
+    (log_dir / "tray.log").write_text(
+        "connecting with code 12345678\n"
+        "rtsp://bblp:f0240da4@10.0.0.5:322/streaming/live/1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "DATA_DIR", str(log_dir))
+    res = client.get("/api/diagnostics")
+    assert res.status_code == 200
+    body = res.json()
+    raw = res.text
+    assert "12345678" not in raw
+    assert "f0240da4" not in raw
+    assert any("***" in line for line in body["log_tail"])
+    assert [p["id"] for p in body["printers"]] == ["n1"]
+    assert "access_code" not in raw
+
+
+def test_read_printers_skips_invalid_entries(client, tmp_path, monkeypatch):
+    cfg = tmp_path / "printers-bad.json"
+    cfg.write_text(
+        '{"ok": {"id": "p1", "name": "A", "ip": "10.0.0.1", "sn": "SN1", "access_code": "abcd1234"},'
+        ' "broken": {"id": "p2", "name": "B"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_module, "CONFIG_PATH", str(cfg))
+    printers = main_module.read_printers()
+    assert list(printers) == ["ok"]
+    assert printers["ok"].id == "p1"
+
+
+def test_invalid_settings_fall_back_to_defaults(client, tmp_path, monkeypatch):
+    cfg = tmp_path / "settings-bad.json"
+    cfg.write_text('{"port": 999999, "allow_motion": "nope"}', encoding="utf-8")
+    monkeypatch.setattr(main_module, "SETTINGS_PATH", str(cfg))
+    settings = main_module.read_settings()
+    assert settings["port"] == 8000
+    assert settings["allow_motion"] is False
+    assert "clear_auth" not in settings
 
 
 def test_printer_crud_lifecycle(client):

@@ -21,7 +21,9 @@ def test_digest_response_without_qop_matches_rfc2069():
     challenge = {"scheme": "digest", "realm": "LIVE555 Streaming Media", "nonce": "abc123"}
     method, uri, password = "DESCRIBE", "rtsps://10.0.0.5:322/streaming/live/1", "f0240da4"
     md5 = lambda s: hashlib.md5(s.encode()).hexdigest()  # noqa: E731
-    expected = md5(f"{md5(f'bblp:{challenge['realm']}:{password}')}:abc123:{md5(f'{method}:{uri}')}")
+    # single-level f-strings: nested same-quote f-strings need Python 3.12+
+    userhash = md5("bblp:" + challenge["realm"] + ":" + password)
+    expected = md5(f"{userhash}:abc123:{md5(f'{method}:{uri}')}")
     header = _digest_response(challenge, method, uri, password)
     assert header.startswith("Digest ")
     assert f'response="{expected}"' in header
