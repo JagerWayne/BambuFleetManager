@@ -18,10 +18,13 @@ Browser ──REST/WS──► FastAPI ──MQTTS 8883──► printers
 
 ## Features
 
-- **Live dashboard.** One fixed-height card per printer with an always-visible camera,
-  temperatures, job progress, quick job controls and a collapsible tab strip.
+- **Focused dashboard.** One printer is shown at a time, chosen from the selector bar at
+  the top (which lists every node with its live status and is remembered per browser). The
+  selected printer gets the full page: an always-visible camera, temperatures, job progress
+  and a tab strip for controls, jog, temperatures, files, AMS, system and staging.
 - **Light & dark themes**, remembered per browser; the choice follows the OS until changed.
-- **Responsive / touch friendly.** Single-column on phones, camera-column layout on desktop.
+- **Responsive / touch friendly.** One page per printer on both phones and desktops; on a
+  phone the actions become a fixed bottom navigation bar in the thumb zone.
 - **Full job control:** pause / resume / stop / recover, speed profiles (Silent → Ludicrous),
   chamber + work lighting.
 - **Skip object,** with the printer's own object list: see which object is printing, which is
@@ -32,14 +35,16 @@ Browser ──REST/WS──► FastAPI ──MQTTS 8883──► printers
   the loaded tray highlighted, and **edit** to set a tray's material / colour / remaining.
 - **SD-card browser.** Browse folders, upload into the current folder, download, delete,
   and print a stored project.
+- **Staging queue.** Drop a sliced project in the *Staging* tab, then drag it onto the card
+  to start it on the selected printer.
 - **Manual temperatures, homing, jog (X/Y/Z), extruder** — all safety-gated.
 - **Live telemetry** over WebSockets with auto-reconnect.
 - **Optional access token** to protect the dashboard and API.
 - **Windows tray app.** A single `BambuFleetManager.exe` bundle that runs the server in
   the background with a tray menu: open the dashboard, start / stop / restart, toggle
   *Start with Windows*, open the data folder and quit.
-- **In-app updates.** *Settings → Updates* checks GitHub Releases, shows the new version
-  and downloads + silently installs it on request.
+- **In-app updates.** *Settings → Updates* checks GitHub Releases, downloads the installer,
+  and runs it when you are ready (or saves a copy to run yourself).
 
 ## Requirements
 

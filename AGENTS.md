@@ -8,7 +8,7 @@ README.md is the user-facing doc; this file is the working notes.
 Python 3.10+; the venv lives at `.venv` and is what everything expects.
 
 ```bat
-.venv\Scripts\python -m pytest tests/ -q          :: 205 tests, ~6s
+.venv\Scripts\python -m pytest tests/ -q          :: 222 tests, ~6s
 .venv\Scripts\python -m pytest tests/test_api.py::test_dashboard_renders -q
 npm install --no-audit --no-fund
 npm run test:ui                                   :: jsdom UI logic tests
@@ -29,19 +29,31 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
 
 ## Frontend: no bundler, vendored Tailwind
 
-- `static/js/app.js` (~2200 lines) and `templates/index.html` are served **raw**. There is
+- `static/js/app.js` (~2500 lines) and `templates/index.html` are served **raw**. There is
   no npm build for the app itself, no framework, no ES modules. Edit them directly.
 - `app.js` must stay a **non-strict, top-level script** (no IIFE, no `"use strict"`, no
   imports): `tests/js/dom_*_test.js` does `window.eval(appJs)` and then calls top-level
-  functions as globals (`window.initTheme()`). Wrapping it breaks the UI tests.
+  functions as globals (`window.initTheme()`, `window.controlHtml()`). Wrapping it breaks the
+  UI tests. Note the inverse: `const state` / `const cards` are **not** reachable from a test
+  (indirect eval keeps `const` in its own scope), so tests must drive the public functions
+  and assert on the DOM.
+- **One printer is mounted at a time.** `renderFleet()` resolves `state.selectedId` (persisted
+  in `localStorage` as `bfm-printer`), renders only that card, and fills the
+  `<select id="printer-select">` in the printer bar. Cards for other ids are `destroy()`ed, so
+  a stray second `[data-card-id]` in the DOM means the selection logic regressed.
+- Component CSS lives in **`@layer components`** in `assets/tailwind.src.css`. This is load
+  bearing: unlayered CSS beats every Tailwind layer, so an unlayered `.chip { display: … }`
+  silently overrides the `hidden` utility. Keep new component classes inside that layer.
 - Tailwind is pre-built offline. `assets/tailwind.src.css` only scans
   `templates/index.html` and `static/js/app.js` via `@source` — that includes the HTML
   strings generated inside `app.js`. **Any new utility class requires
   `npm run build:css`**, and the regenerated `static/css/tailwind.min.css` is a tracked
   build artifact that CI checks for.
-- The jsdom tests stub `fetch`, `WebSocket`, `matchMedia` and `requestAnimationFrame`
-  before eval; telemetry arrives several times/sec so cards are created once and mutated
-  through cached refs — don't re-serialise card markup from the live feed.
+- The jsdom tests stub `fetch`, `WebSocket`, `IntersectionObserver`, `matchMedia` and
+  `requestAnimationFrame` before eval; telemetry arrives several times/sec so cards are
+  created once and mutated through cached refs — don't re-serialise card markup from the
+  live feed. The IntersectionObserver pauses a card's camera when it scrolls away, which is
+  why fullscreen needs the `isCamFullscreen()` guard (see `dom_camera_test.js`).
 
 ## Backend layout
 
