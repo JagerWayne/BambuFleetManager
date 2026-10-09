@@ -1123,13 +1123,13 @@ def test_update_install_refuses_when_current(client, monkeypatch):
 def test_update_install_downloads_and_launches(client, monkeypatch):
     calls = {}
 
-    def fake_download(dest, url):
-        calls["download"] = (dest, url)
+    def fake_download(dest, url, expect_size=0):
+        calls["download"] = (dest, url, expect_size)
         return "C:/tmp/s.exe"
 
     monkeypatch.setattr(main_module.updater, "check_for_update",
                         lambda: {"update_available": True, "asset_url": "http://x/y.exe",
-                                 "latest": "v1.1.0"})
+                                 "latest": "v1.1.0", "asset_size": 4096})
     monkeypatch.setattr(main_module.updater, "download_installer", fake_download)
     monkeypatch.setattr(main_module.updater, "launch_installer",
                         lambda path: calls.setdefault("launch", path))
@@ -1137,7 +1137,93 @@ def test_update_install_downloads_and_launches(client, monkeypatch):
     assert res.status_code == 200
     assert res.json()["started"] is True
     assert calls["download"][1] == "http://x/y.exe"
+    # the published asset size is forwarded so a truncated file is caught
+    assert calls["download"][2] == 4096
     assert calls["launch"] == "C:/tmp/s.exe"
+
+
+def test_update_download_only_stages_the_installer(client, monkeypatch, tmp_path):
+    """The manual flow: fetch the file, do not launch anything."""
+    staged = tmp_path / "BambuFleetManagerSetup.exe"
+    staged.write_bytes(b"x" * 128)
+    launched = []
+
+    monkeypatch.setattr(main_module.updater, "check_for_update",
+                        lambda: {"update_available": True, "asset_url": "http://x/y.exe",
+                                 "latest": "v1.2.0", "asset_size": 128})
+    monkeypatch.setattr(main_module.updater, "download_installer",
+                        lambda dest, url, expect_size=0: str(staged))
+    monkeypatch.setattr(main_module.updater, "launch_installer",
+                        lambda path: launched.append(path))
+
+    res = client.post("/api/update/download")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["downloaded"] is True
+    assert body["version"] == "v1.2.0"
+    assert body["size"] == 128
+    # downloading must never start the installer or quit the app
+    assert launched == []
+
+
+def test_update_download_refuses_when_current(client, monkeypatch):
+    monkeypatch.setattr(main_module.updater, "check_for_update",
+                        lambda: {"update_available": False, "error": ""})
+    assert client.post("/api/update/download").status_code == 409
+
+
+def test_update_run_requires_a_staged_file(client, monkeypatch):
+    monkeypatch.setattr(main_module.updater, "check_for_update",
+                        lambda: {"latest": "v1.2.0", "asset_size": 128})
+    monkeypatch.setattr(main_module.updater, "staged_installer", lambda dest: None)
+    res = client.post("/api/update/run")
+    assert res.status_code == 409
+    assert "Download" in res.json()["detail"]
+
+
+def test_update_run_refuses_an_incomplete_download(client, monkeypatch, tmp_path):
+    partial = tmp_path / "BambuFleetManagerSetup.exe"
+    partial.write_bytes(b"x" * 10)
+    launched = []
+    monkeypatch.setattr(main_module.updater, "check_for_update",
+                        lambda: {"latest": "v1.2.0", "asset_size": 4096})
+    monkeypatch.setattr(main_module.updater, "staged_installer", lambda dest: str(partial))
+    monkeypatch.setattr(main_module.updater, "launch_installer",
+                        lambda path: launched.append(path))
+    res = client.post("/api/update/run")
+    assert res.status_code == 409
+    assert launched == []
+
+
+def test_update_run_launches_the_staged_installer(client, monkeypatch, tmp_path):
+    staged = tmp_path / "BambuFleetManagerSetup.exe"
+    staged.write_bytes(b"x" * 4096)
+    launched = []
+    monkeypatch.setattr(main_module.updater, "check_for_update",
+                        lambda: {"latest": "v1.2.0", "asset_size": 4096})
+    monkeypatch.setattr(main_module.updater, "staged_installer", lambda dest: str(staged))
+    monkeypatch.setattr(main_module.updater, "launch_installer",
+                        lambda path: launched.append(path))
+    res = client.post("/api/update/run")
+    assert res.status_code == 200
+    assert res.json()["started"] is True
+    assert launched == [str(staged)]
+
+
+def test_update_installer_copy_serves_the_staged_file(client, monkeypatch, tmp_path):
+    staged = tmp_path / "BambuFleetManagerSetup.exe"
+    staged.write_bytes(b"MZ" + b"\x00" * 32)
+    monkeypatch.setattr(main_module.updater, "staged_installer", lambda dest: str(staged))
+    res = client.get("/api/update/installer")
+    assert res.status_code == 200
+    assert res.content == b"MZ" + b"\x00" * 32
+    assert "attachment" in res.headers["content-disposition"]
+    assert "BambuFleetManagerSetup.exe" in res.headers["content-disposition"]
+
+
+def test_update_installer_copy_404_when_absent(client, monkeypatch):
+    monkeypatch.setattr(main_module.updater, "staged_installer", lambda dest: None)
+    assert client.get("/api/update/installer").status_code == 404
 
 
 def test_shutdown_hooks_run():

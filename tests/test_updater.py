@@ -2,16 +2,18 @@
 
 import os
 
+import pytest
 import requests
 
 from backend import updater
 
 
 class FakeResponse:
-    def __init__(self, status=200, payload=None, chunks=b"data"):
+    def __init__(self, status=200, payload=None, chunks=b"data", headers=None):
         self.status_code = status
         self._payload = payload
         self._chunks = chunks
+        self.headers = headers if headers is not None else {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -91,3 +93,60 @@ def test_download_installer(monkeypatch, tmp_path):
     assert os.path.basename(path) == updater.ASSET_NAME
     with open(path, "rb") as fh:
         assert fh.read() == b"setup"
+
+
+def test_download_installer_accepts_a_matching_content_length(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        updater.requests, "get",
+        lambda *a, **k: FakeResponse(200, chunks=b"setup", headers={"Content-Length": "5"}))
+    path = updater.download_installer(str(tmp_path / "updates"), "http://x/y.exe")
+    assert os.path.getsize(path) == 5
+
+
+def test_download_installer_rejects_a_truncated_download(monkeypatch, tmp_path):
+    """A short transfer must never be handed back as if it were the installer."""
+    monkeypatch.setattr(
+        updater.requests, "get",
+        lambda *a, **k: FakeResponse(200, chunks=b"setup", headers={"Content-Length": "9999"}))
+    dest = tmp_path / "updates"
+    with pytest.raises(IOError):
+        updater.download_installer(str(dest), "http://x/y.exe")
+    # nothing left behind that could be run by mistake
+    assert not (dest / updater.ASSET_NAME).exists()
+    assert not (dest / (updater.ASSET_NAME + ".part")).exists()
+
+
+def test_download_installer_falls_back_to_the_expected_size(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater.requests, "get", lambda *a, **k: FakeResponse(200, chunks=b"setup"))
+    dest = tmp_path / "updates"
+    with pytest.raises(IOError):
+        updater.download_installer(str(dest), "http://x/y.exe", 12345)
+    assert not (dest / updater.ASSET_NAME).exists()
+
+
+def test_download_installer_cleans_up_after_a_network_failure(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise requests.ConnectionError("dropped")
+
+    monkeypatch.setattr(updater.requests, "get", boom)
+    dest = tmp_path / "updates"
+    with pytest.raises(requests.ConnectionError):
+        updater.download_installer(str(dest), "http://x/y.exe")
+    assert not (dest / updater.ASSET_NAME).exists()
+    assert not (dest / (updater.ASSET_NAME + ".part")).exists()
+
+
+def test_staged_installer(tmp_path):
+    dest = str(tmp_path / "updates")
+    assert updater.staged_installer(dest) is None
+    os.makedirs(dest, exist_ok=True)
+    target = os.path.join(dest, updater.ASSET_NAME)
+    with open(target, "wb") as fh:
+        fh.write(b"MZ")
+    assert updater.staged_installer(dest) == target
+
+
+def test_download_timeouts_are_not_the_metadata_timeout():
+    """The ~45 MB asset needs a real read timeout, not the 15s API one."""
+    assert updater._API_TIMEOUT == 15
+    assert updater._DOWNLOAD_TIMEOUT[1] > updater._API_TIMEOUT

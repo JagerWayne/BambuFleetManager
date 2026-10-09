@@ -23,7 +23,11 @@ ASSET_NAME = "BambuFleetManagerSetup.exe"
 ASSET_HINTS = ("setup", "installer")
 
 _USER_AGENT = "BambuFleetManager-Updater"
-_TIMEOUT = 15
+#: Metadata calls (release JSON) only need a short timeout.
+_API_TIMEOUT = 15
+#: The installer is ~45 MB, so a single 15s all-or-nothing timeout aborts any
+#: download that pauses - the user just sees "retry". (connect, read)
+_DOWNLOAD_TIMEOUT = (20, 180)
 
 
 def current_version() -> str:
@@ -84,7 +88,7 @@ def check_for_update() -> Dict[str, Any]:
         resp = requests.get(
             RELEASES_API,
             headers={"Accept": "application/vnd.github+json", "User-Agent": _USER_AGENT},
-            timeout=_TIMEOUT,
+            timeout=_API_TIMEOUT,
         )
         if resp.status_code == 404:
             result["error"] = "No releases published yet."
@@ -114,18 +118,55 @@ def check_for_update() -> Dict[str, Any]:
     return result
 
 
-def download_installer(dest_dir: str, asset_url: str) -> str:
-    """Stream the installer asset into ``dest_dir`` and return its path."""
+def download_installer(dest_dir: str, asset_url: str, expect_size: int = 0) -> str:
+    """Stream the installer asset into ``dest_dir`` and return its path.
+
+    Downloads to a ``.part`` file and only moves it into place once the byte
+    count matches what the server promised, so an interrupted transfer can never
+    be handed to the installer as if it were complete.
+    """
     os.makedirs(dest_dir, exist_ok=True)
     target = os.path.join(dest_dir, ASSET_NAME)
-    with requests.get(asset_url, headers={"User-Agent": _USER_AGENT},
-                      stream=True, timeout=_TIMEOUT) as resp:
-        resp.raise_for_status()
-        with open(target, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    fh.write(chunk)
-    return target
+    partial = target + ".part"
+    try:
+        with requests.get(asset_url, headers={"User-Agent": _USER_AGENT},
+                          stream=True, timeout=_DOWNLOAD_TIMEOUT) as resp:
+            resp.raise_for_status()
+            try:
+                declared = int(resp.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                declared = 0
+            expected = declared or int(expect_size or 0)
+            written = 0
+            with open(partial, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1 << 16):
+                    if chunk:
+                        fh.write(chunk)
+                        written += len(chunk)
+            if expected and written != expected:
+                raise IOError(
+                    f"Download incomplete: got {written} of {expected} bytes. Try again."
+                )
+        os.replace(partial, target)
+        return target
+    except BaseException:
+        # never leave a half-written installer lying around
+        try:
+            os.remove(partial)
+        except OSError:
+            pass
+        raise
+
+
+def staged_installer(dest_dir: str) -> Optional[str]:
+    """Path of a fully downloaded installer sitting in ``dest_dir``, if any."""
+    target = os.path.join(dest_dir, ASSET_NAME)
+    try:
+        if os.path.getsize(target) > 0:
+            return target
+    except OSError:
+        pass
+    return None
 
 
 def launch_installer(path: str) -> None:

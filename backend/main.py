@@ -26,6 +26,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
@@ -570,13 +571,12 @@ async def check_update():
     return await run_blocking(updater.check_for_update)
 
 
-@app.post("/api/update/install")
-async def install_update():
-    """Download the latest installer and launch it, then quit to free the files.
+@app.post("/api/update/download")
+async def download_update():
+    """Download the installer and stop there - nothing is launched.
 
-    The installer runs silently and upgrades in place. We shut the app down so
-    Inno Setup can replace the running files; the installer relaunches it when
-    done (``/RESTARTAPPLICATIONS``).
+    The dashboard offers this as a separate step so the file can be fetched
+    first (and kept, or run by hand) instead of download-and-launch in one go.
     """
     report = await run_blocking(updater.check_for_update)
     if not report.get("update_available") or not report.get("asset_url"):
@@ -584,7 +584,88 @@ async def install_update():
 
     try:
         installer = await run_blocking(
-            updater.download_installer, UPDATE_DIR, report["asset_url"]
+            updater.download_installer, UPDATE_DIR, report["asset_url"],
+            int(report.get("asset_size") or 0)
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Download failed: {exc}")
+
+    logger.info("Staged installer %s for %s at %s", report.get("latest"), report.get("asset_size"), installer)
+    return {
+        "downloaded": True,
+        "version": report.get("latest"),
+        "installer": installer,
+        "size": os.path.getsize(installer),
+    }
+
+
+@app.get("/api/update/installer")
+async def download_installer_copy():
+    """Serve the staged installer as a normal browser download.
+
+    Same bytes, saved wherever the browser puts it - handy for keeping a copy
+    or running it from somewhere other than the app's data directory.
+    """
+    installer = updater.staged_installer(UPDATE_DIR)
+    if not installer:
+        raise HTTPException(status_code=404, detail="No installer has been downloaded yet")
+    return FileResponse(
+        installer,
+        media_type="application/vnd.microsoft.portable-executable",
+        filename=os.path.basename(installer),
+    )
+
+
+@app.post("/api/update/run")
+async def run_staged_installer():
+    """Launch an already-downloaded installer, then quit to free the files.
+
+    The second half of the manual flow: download first, run when you are ready.
+    """
+    report = await run_blocking(updater.check_for_update)
+    installer = updater.staged_installer(UPDATE_DIR)
+    if not installer:
+        raise HTTPException(
+            status_code=409, detail="Nothing downloaded yet - press Download first.")
+
+    # Refuse to run a file that does not match the published asset size.
+    expected = int(report.get("asset_size") or 0)
+    actual = os.path.getsize(installer)
+    if expected and actual != expected:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"The downloaded installer is incomplete ({actual} of {expected} bytes). "
+                    "Download it again."),
+        )
+
+    try:
+        await run_blocking(updater.launch_installer, installer)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not start installer: {exc}")
+
+    logger.info("Running staged installer %s (%s)", report.get("latest"), installer)
+    # Give the response a moment to reach the browser, then quit.
+    asyncio.get_event_loop().call_later(1.0, run_shutdown_hooks)
+    return {"started": True, "version": report.get("latest"), "installer": installer}
+
+
+@app.post("/api/update/install")
+async def install_update():
+    """Download the latest installer and launch it, then quit to free the files.
+
+    The installer runs silently and upgrades in place. We shut the app down so
+    Inno Setup can replace the running files; the installer relaunches it when
+    done (``/RESTARTAPPLICATIONS``). This is the one-shot flow; the dashboard
+    also exposes download and run as separate steps.
+    """
+    report = await run_blocking(updater.check_for_update)
+    if not report.get("update_available") or not report.get("asset_url"):
+        raise HTTPException(status_code=409, detail=report.get("error") or "No update available")
+
+    try:
+        installer = await run_blocking(
+            updater.download_installer, UPDATE_DIR, report["asset_url"],
+            int(report.get("asset_size") or 0)
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Download failed: {exc}")
