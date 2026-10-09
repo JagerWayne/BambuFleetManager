@@ -92,6 +92,10 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
   firmware); it is persisted in `config/state.json` and cleared when a job starts.
 - If you add a command, add it to `COMMANDS` **and** the risk sets in `commands.py`, and
   exercise the 409 path in `tests/test_api.py`.
+- `set_fan` is a **`safe`** command (it moves no axes and heats nothing) sent as an `M106`
+  G-code line. Its `FAN_INDICES` name->`P` table is X1-family specific and **not verified on
+  every firmware** - the UI shows each fan's reported speed beside its slider so a wrong
+  mapping is visible rather than silent. Don't retune that table without a machine to check it.
 
 ## Testing quirks
 

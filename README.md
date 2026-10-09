@@ -40,6 +40,8 @@ Browser ──REST/WS──► FastAPI ──MQTTS 8883──► printers
 - **Staging queue.** Drop a sliced project in the *Staging* tab, then drag it onto the card
   to start it on the selected printer.
 - **Manual temperatures, homing, jog (X/Y/Z), extruder** — all safety-gated.
+- **Fan control.** Sliders for the part-cooling, auxiliary and chamber fans (0-100%), each shown
+  next to the speed the printer reports back, plus Off/50/100 presets.
 - **Live telemetry** over WebSockets with auto-reconnect.
 - **Optional access token** to protect the dashboard and API.
 - **Windows tray app.** A single `BambuFleetManager.exe` bundle that runs the server in
@@ -159,6 +161,7 @@ setting skips the confirmation ticks while still enforcing homing and the idle c
 | `POST` | `/api/printers/{id}/speed` | `{"speed_level": 1..4}` |
 | `POST` | `/api/printers/{id}/light-mode` | `{node, mode}` |
 | `POST` | `/api/printers/{id}/temperature` | `{nozzle, bed, confirm_thermal}` |
+| `POST` | `/api/printers/{id}/fan` | `{fan: part\|aux\|chamber, speed: 0-100}` |
 | `POST` | `/api/printers/{id}/{home\|jog\|extrude}` | safe motion |
 | `POST` | `/api/printers/{id}/ams` | AMS feed / unload / select / info |
 | `POST` | `/api/printers/{id}/filament` | write a tray's material/colour/remaining |
