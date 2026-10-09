@@ -457,6 +457,7 @@ function createCard(printer) {
         </div>
 
         <div class="flex shrink-0 items-center gap-1">
+          <button class="icon-btn" data-action="cam-start" title="Start stream">▶</button>
           <button class="icon-btn" data-action="cam-stop" title="Stop stream">■</button>
           <button class="icon-btn" data-action="cam-snapshot" title="Save snapshot">◉</button>
           <button class="icon-btn" data-action="cam-fullscreen" title="Fullscreen">⛶</button>
@@ -1440,6 +1441,15 @@ function trayFlatIndex(unitId, tray) {
 
 /* ----------------------------------------------------------------- camera */
 
+//: How long to wait for the first frame before calling the camera unreachable.
+//: (jsdom tests set window.CAMERA_FIRST_FRAME_MS to avoid a 12s wait.)
+const CAMERA_FIRST_FRAME_MS = window.CAMERA_FIRST_FRAME_MS || 12000;
+const CAMERA_NO_FRAMES_MSG =
+  'No frames from the camera. Check the printer is powered on and on the network, and that '
+  + 'no other viewer is already using its camera.';
+const CAMERA_FAILED_MSG =
+  'Could not open the live stream. Check the printer is on and reachable.';
+
 function startCamera(printer, entry) {
   const refs = entry.camRefs;
   if (!refs || !printer || entry.camera) return;
@@ -1451,28 +1461,43 @@ function startCamera(printer, entry) {
   img.classList.remove('hidden');
   refs.status.textContent = 'connecting…';
 
-  img.onload = () => { refs.status.textContent = 'live (MJPEG)'; };
-  img.onerror = () => {
-    refs.status.textContent = 'stream failed';
-    refs.overlay.textContent = 'Could not open the live stream. Check the printer is on and ' +
-      'reachable, then press Start again — or use the RTSPS URL below in VLC.';
-    refs.overlay.classList.remove('hidden');
-    stopCamera(entry);
+  let gotFrame = false;
+  // A stream can connect and then deliver nothing at all (printer off, camera
+  // taken by another viewer, RTSP blocked). Without a watchdog the frame just
+  // stays blank with no explanation, so say something useful.
+  const watchdog = setTimeout(() => {
+    if (gotFrame || !entry.camera) return;
+    stopCamera(entry, CAMERA_NO_FRAMES_MSG);
+  }, CAMERA_FIRST_FRAME_MS);
+
+  const settle = (message) => {
+    if (!entry.camera) return;
+    stopCamera(entry, message);
   };
 
+  img.onload = () => {
+    gotFrame = true;
+    clearTimeout(watchdog);
+    refs.status.textContent = 'live (MJPEG)';
+  };
+  img.onerror = () => settle(CAMERA_FAILED_MSG);
+
   img.src = `/api/printers/${printer.id}/camera/mjpeg?width=1280&fps=12&t=${Date.now()}`;
-  entry.camera = { img };
+  entry.camera = { img, watchdog };
 }
 
-function stopCamera(entry) {
+// ``message`` keeps a failure explanation on screen; without one this is a
+// deliberate stop, so the overlay offers the Start button instead.
+function stopCamera(entry, message) {
   if (!entry || !entry.camera) return;
-  const { img } = entry.camera;
+  const { img, watchdog } = entry.camera;
+  if (watchdog) clearTimeout(watchdog);
   try { img.onload = null; img.onerror = null; img.src = ''; } catch (_) { /* ignore */ }
   img.classList.add('hidden');
   if (entry.camRefs) {
-    entry.camRefs.overlay.textContent = 'Press Start to open the live view.';
+    entry.camRefs.overlay.textContent = message || 'Camera stopped.';
     entry.camRefs.overlay.classList.remove('hidden');
-    entry.camRefs.status.textContent = 'stopped';
+    entry.camRefs.status.textContent = message ? 'no stream' : 'stopped';
   }
   entry.camera = null;
 }
@@ -1662,6 +1687,25 @@ async function handleAction(printerId, el, entry) {
     case 'file-menu-close': {
       const menu = el.closest('details.file-menu');
       if (menu) menu.removeAttribute('open');
+      break;
+    }
+    case 'print-staged': {
+      const file = el.dataset.file;
+      const printer = printerById(printerId);
+      el.disabled = true;
+      try {
+        // send it to the printer first, then reuse the normal print preview
+        const r = await api(`/api/printers/${printerId}/files/upload-staged`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: file, dir_path: '/' })
+        });
+        toast(`sent ${r.name} to ${printer ? printer.name : printerId}`);
+        await openPrintDialog(printerId, r.path);
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        el.disabled = false;
+      }
       break;
     }
     case 'fan': {
@@ -1935,7 +1979,7 @@ function stagingHtml() {
       <div class="section-head">
         <div class="section-head-text">
           <h2 class="section-title">Staging queue</h2>
-          <p class="section-sub">Drop a sliced project here, then drag it onto the card to start it.</p>
+          <p class="section-sub">Drop a sliced project here, then send it to the selected printer.</p>
         </div>
         <span id="staged-count" class="chip border line surface-2 t-mut">0 files</span>
       </div>
@@ -1955,8 +1999,9 @@ function stagingHtml() {
       </div>
 
       <p class="font-mono text-[10px] t-mut">
-        Staged files stay on this machine. Drag one onto the card to send it${recipient},
-        or open a file from the Files tab.
+        Staged files stay on this machine. <span class="t-body">Print…</span> sends one to the
+        selected printer${recipient} and opens the usual preview, where you pick the plate and map
+        the filaments. Dragging a file onto the card still works with a mouse.
       </p>
     </div>`;
 }
@@ -2001,13 +2046,13 @@ function renderStaged() {
     return;
   }
   box.innerHTML = state.staged.map((fn) => `
-    <div draggable="true" data-file="${escapeHtml(fn)}"
-         class="flex cursor-grab items-center justify-between gap-2 rounded-xl border line surface-2 px-3 py-2 active:cursor-grabbing">
-      <span class="min-w-0 truncate font-mono text-[11px] t-strong">${escapeHtml(fn)}</span>
-      <span class="flex shrink-0 items-center gap-2">
-        <span class="font-mono text-[10px] font-bold t-accent">DRAG →</span>
-        <button data-remove="${escapeHtml(fn)}" class="t-mut hover:t-danger" title="Remove from staging">✕</button>
-      </span>
+    <div draggable="true" data-file="${escapeHtml(fn)}" class="staged-row">
+      <span class="min-w-0 flex-1 truncate font-mono text-[11px] t-strong">${escapeHtml(fn)}</span>
+      <button class="btn btn-primary shrink-0" data-action="print-staged"
+              data-file="${escapeHtml(fn)}">Print…</button>
+      <span class="drag-hint shrink-0 font-mono text-[10px] font-bold t-accent">DRAG →</span>
+      <button data-remove="${escapeHtml(fn)}" class="shrink-0 t-mut hover:t-danger"
+              title="Remove from staging">✕</button>
     </div>`).join('');
 }
 

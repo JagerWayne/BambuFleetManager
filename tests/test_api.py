@@ -750,6 +750,64 @@ def test_temperature_sends_each_target(node, client):
 # ------------------------------------------------------------------------- fans
 
 
+# ----------------------------------------------------------------- staging send
+
+
+def test_send_staged_file_uploads_it(node, client, monkeypatch, tmp_path):
+    staged = tmp_path / "part.3mf"
+    staged.write_bytes(b"PK\x03\x04project")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    calls = {}
+    monkeypatch.setattr(
+        main_module, "upload_3mf_file",
+        lambda ip, code, local, remote_dir: calls.update(
+            {"ip": ip, "local": local, "dir": remote_dir}) or True,
+    )
+
+    res = client.post(
+        f"/api/printers/{node}/files/upload-staged",
+        json={"filename": "part.3mf", "dir_path": "/"},
+    )
+    assert res.status_code == 200
+    assert res.json()["path"] == "/part.3mf"
+    assert res.json()["name"] == "part.3mf"
+    assert calls["local"] == str(staged)
+    assert calls["dir"] == "/"
+
+
+def test_send_staged_file_rejects_a_missing_file(node, client, monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+    res = client.post(
+        f"/api/printers/{node}/files/upload-staged",
+        json={"filename": "ghost.3mf", "dir_path": "/"},
+    )
+    assert res.status_code == 404
+
+
+def test_send_staged_file_rejects_a_bad_name(node, client):
+    for bad in ("part.txt", "../escape.3mf", "sub/dir.3mf"):
+        res = client.post(
+            f"/api/printers/{node}/files/upload-staged",
+            json={"filename": bad, "dir_path": "/"},
+        )
+        assert res.status_code == 400, bad
+
+
+def test_send_staged_file_surfaces_ftps_errors(node, client, monkeypatch, tmp_path):
+    (tmp_path / "part.3mf").write_bytes(b"PK\x03\x04")
+    monkeypatch.setattr(main_module, "UPLOAD_DIR", str(tmp_path))
+
+    def boom(*a, **k):
+        raise OSError("425 transfer failed")
+
+    monkeypatch.setattr(main_module, "upload_3mf_file", boom)
+    res = client.post(
+        f"/api/printers/{node}/files/upload-staged",
+        json={"filename": "part.3mf", "dir_path": "/"},
+    )
+    assert res.status_code == 502
+
+
 def test_fan_sends_an_m106_gcode_line(node, client):
     res = client.post(f"/api/printers/{node}/fan", json={"fan": "aux", "speed": 100})
     assert res.status_code == 200

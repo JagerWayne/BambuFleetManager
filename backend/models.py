@@ -226,6 +226,13 @@ class FanCommand(BaseModel):
     speed: int = Field(ge=0, le=100)
 
 
+class SendStagedCommand(BaseModel):
+    """Send a file staged on this server to the printer's SD card."""
+
+    filename: str = Field(min_length=1, max_length=255)
+    dir_path: str = "/"
+
+
 class JogCommand(BaseModel):
     """Relative move of one axis. Machine-moving - needs confirmation."""
 

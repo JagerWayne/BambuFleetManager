@@ -76,6 +76,7 @@ from backend.models import (
     RebootCommand,
     RenameEntryCommand,
     ServerSettings,
+    SendStagedCommand,
     RemotePath,
     SkipObjectCommand,
     SpeedCommand,
@@ -1487,6 +1488,39 @@ async def rename_remote_file(printer_id: str, cmd: RenameEntryCommand):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Rename failed: {exc}")
     return {"status": "renamed", "path": new_path, "name": name}
+
+
+@app.post("/api/printers/{printer_id}/files/upload-staged")
+async def upload_staged_file(printer_id: str, cmd: SendStagedCommand):
+    """Send a file already staged on this server to the printer's SD card.
+
+    This is the mobile-friendly replacement for dragging a staged file onto the
+    card: send it, then run the normal print preview on the uploaded path.
+    """
+    printer = get_printer(printer_id)
+    name = cmd.filename.strip()
+    if not name.lower().endswith(ALLOWED_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Only .3mf / .gcode.3mf projects can be sent")
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="filename must not contain a path")
+
+    local_path = os.path.join(UPLOAD_DIR, name)
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail=f"{name} is not staged on this server")
+
+    target_dir = normalize_remote_path(cmd.dir_path)
+    try:
+        ok = await run_blocking(
+            upload_3mf_file, printer.ip, printer.access_code, local_path, target_dir
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+    if not ok:
+        raise HTTPException(status_code=502, detail="FTPS transfer failed")
+
+    remote = posixpath.join(target_dir, name) if target_dir != "/" else f"/{name}"
+    logger.info("Staged file %s sent to %s at %s", name, printer_id, remote)
+    return {"status": "sent", "path": remote, "name": name, "dir": target_dir}
 
 
 @app.get("/api/printers/{printer_id}/files/download")

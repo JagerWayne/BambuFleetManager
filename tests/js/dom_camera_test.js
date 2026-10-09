@@ -47,6 +47,8 @@ Object.defineProperty(window.document, 'fullscreenElement', {
   get: () => fullscreenElement, configurable: true
 });
 
+const tick = () => new Promise((r) => setTimeout(r, 25));
+window.CAMERA_FIRST_FRAME_MS = 60;   // do not wait 12s in the suite
 window.eval(appJs);
 
 let pass = 0, fail = 0;
@@ -73,7 +75,8 @@ const fire = (isIntersecting) => observerCallback([{ isIntersecting }]);
   // scrolling the card out of view legitimately stops the stream
   fire(false);
   check('scrolling out of view stops the stream', !streaming());
-  check('and shows the prompt', overlay().textContent === 'Press Start to open the live view.');
+  check('and says so plainly (no false "press Start")',
+    overlay().textContent === 'Camera stopped.', overlay().textContent);
 
   // back in view
   fire(true);
@@ -114,6 +117,39 @@ const fire = (isIntersecting) => observerCallback([{ isIntersecting }]);
   await new Promise((r) => setTimeout(r, 10));
   check('cameras on restarts the stream', streaming());
   check('status text reports the stream', $q('[data-card-id="n1"] [data-role="cam-status"]').textContent.length > 0);
+
+  /* --- a failed stream must explain itself, not say "press Start" ------- */
+  // the failure message used to be set and then immediately overwritten by
+  // stopCamera, so a broken camera always looked like "press Start"
+  const img = $q('[data-card-id="n1"] [data-role="cam-img"]');
+  img.onerror();
+  await tick();
+  check('a failed stream stops it', !streaming());
+  check('the failure reason is kept on screen',
+    overlay().textContent.indexOf('Could not open the live stream') === 0, overlay().textContent);
+  check('no misleading "press Start"', overlay().textContent.indexOf('Press Start') < 0);
+
+  /* --- there is a real way to start it again ---------------------------- */
+  const startBtn = $q('[data-card-id="n1"] [data-action="cam-start"]');
+  check('the camera row offers a Start button', Boolean(startBtn));
+  startBtn.click();
+  await tick();
+  check('Start restarts the stream', streaming());
+  check('overlay hidden again while streaming', overlay().classList.contains('hidden'));
+
+  /* --- a silent stream times out rather than hanging forever ------------ */
+  // ffmpeg can connect and then deliver nothing (printer off / camera busy);
+  // the button path is used here because `cards` is not reachable from a test
+  $q('[data-card-id="n1"] [data-action="cam-stop"]').click();
+  await tick();
+  check('the Stop button stops it', !streaming());
+  $q('[data-card-id="n1"] [data-action="cam-start"]').click();
+  await tick();
+  check('streaming again before the timeout', streaming());
+  await new Promise((r) => setTimeout(r, 200));   // CAMERA_FIRST_FRAME_MS is 60 in this test
+  check('a silent stream times out', !streaming());
+  check('and explains the likely cause',
+    overlay().textContent.indexOf('No frames from the camera') === 0, overlay().textContent);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

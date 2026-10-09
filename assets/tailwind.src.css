@@ -667,8 +667,23 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   overscroll-behavior: contain;
 }
 
-@media (min-width: 640px) {
-  .staged-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* one row per staged file: name, a Print action for touch, the drag hint for a
+   mouse, and remove */
+.staged-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  cursor: grab;
+}
+.staged-row:active { cursor: grabbing; }
+
+/* there is no drag on a touch screen, so do not advertise it */
+@media (hover: none) {
+  .drag-hint { display: none; }
 }
 
 /* --- fleet grid ------------------------------------------------------- */
