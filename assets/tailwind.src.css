@@ -602,8 +602,12 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   /* A tile always spans the full width of whatever grid it lands in, so the
      card reads as one tile per row on phones and desktops alike. No effect
      outside a grid container. */
-  grid-column: 1 / -1;
+   grid-column: 1 / -1;
 }
+
+/* Opt out of the full-width default for the two side-by-side camera tiles
+   (nozzle + bed), and only those. */
+.tile-inline { grid-column: auto; }
 
 /* --- staging queue ---------------------------------------------------- */
 
@@ -1036,6 +1040,41 @@ input[type="color"].field::-moz-color-swatch {
   color: var(--accent);
 }
 
+/* --- skip-object bed diagram: the printer's own skip screen, top-down --- */
+
+.bed-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: var(--space-xs);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.bed-obj {
+  fill: var(--surface-3);
+  stroke: var(--line);
+  stroke-width: 1.5;
+  cursor: pointer;
+  transition:
+    fill var(--dur-fast) var(--ease),
+    stroke var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+.bed-obj:hover { fill: var(--line); }
+
+/* the same four states as the text list, keyed by colour alone */
+.bed-obj.is-done { fill: var(--track); opacity: 0.45; }
+.bed-obj.is-current { fill: var(--accent); stroke: var(--accent-line); }
+.bed-obj.is-next { fill: var(--warn-soft); stroke: var(--warn); }
+.bed-obj.is-queued {
+  fill: var(--accent-soft);
+  stroke: var(--accent-line);
+  stroke-dasharray: 4 3;
+}
+.bed-obj[data-disabled="1"] { pointer-events: none; opacity: 0.6; }
+
 input[type="range"].slider {
   -webkit-appearance: none;
   appearance: none;
@@ -1187,6 +1226,102 @@ input[type="range"].slider::-moz-range-thumb {
 .filament-map-select {
   flex: 1 1 100%;
   min-height: var(--tap-min);
+}
+
+/* The chosen tray is a tappable button, not a native <select>: the modal it
+   opens can show every tray's colour swatch, which a native picker cannot. */
+.filament-map-pick {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: var(--tap-min);
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.filament-map-pick:hover { background: var(--line); color: var(--text-strong); }
+
+.filament-map-pick-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.filament-map-pick-best {
+  display: block;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* --- tray picker modal ------------------------------------------------- */
+
+.tray-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.tray-option:hover { background: var(--surface-3); color: var(--text-strong); }
+.tray-option.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+/* an empty slot shows a checkerboard rather than a flat "no colour" block */
+.tray-swatch {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background-image:
+    linear-gradient(45deg, var(--surface-3) 25%, transparent 25%, transparent 75%, var(--surface-3) 75%),
+    linear-gradient(45deg, var(--surface-3) 25%, transparent 25%, transparent 75%, var(--surface-3) 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 5px 5px;
+}
+
+.tray-option-label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+.tray-option-sub {
+  display: block;
+  font-size: var(--fs-2xs);
+  color: var(--text-mut);
+}
+.tray-best {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 /* --- file browser ----------------------------------------------------- */
@@ -1405,6 +1540,24 @@ input[type="range"].slider::-moz-range-thumb {
 .cam-box { background: #000; }
 .cam-box:fullscreen { width: 100vw; height: 100vh; max-width: none; border: 0; border-radius: 0; aspect-ratio: auto; }
 .cam-box:fullscreen img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Fullscreen heads-up display: temperatures, progress, job and time left, plus
+   the way out. Hidden unless the box is fullscreen. */
+.cam-hud {
+  display: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.4rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+.cam-box:fullscreen .cam-hud { display: flex; }
+/* only the exit control takes clicks; the readouts stay click-through */
+.cam-hud .icon-btn { pointer-events: auto; }
 
 /* the camera column of a printer card: capped, but never wider than 42% so
    two cards can share a row on wide screens */

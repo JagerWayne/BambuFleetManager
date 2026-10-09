@@ -18,6 +18,12 @@ const state = {
   speedModalPrinter: null,
   cameraEnabled: true,
   print: { printerId: null, path: null, plan: null, plate: 1, mapping: {} },
+  // full path of the file each printer is running, so the skip bed can find it
+  printPath: {},
+  // plate geometry per filename; null means "tried, unavailable" so we do not refetch
+  plateGeom: {},
+  plateGeomPending: {},
+  trayPicker: null,
   filament: null,
   filaments: [],
   filamentCategories: []
@@ -454,6 +460,14 @@ function createCard(printer) {
                class="absolute inset-0 grid place-items-center px-3 text-center font-mono text-[10px] t-mut">
             Connecting to camera…
           </div>
+          <div data-role="cam-hud" class="cam-hud">
+            <span class="t-strong" data-r="hudNozzle"></span>
+            <span class="t-strong" data-r="hudBed"></span>
+            <span class="t-accent" data-r="hudProgress"></span>
+            <span class="min-w-0 flex-1 truncate t-body" data-r="hudJob"></span>
+            <span class="t-mut" data-r="hudRemaining"></span>
+            <button type="button" class="icon-btn shrink-0" data-action="cam-normal" aria-label="Exit fullscreen">✕</button>
+          </div>
         </div>
 
         <div class="flex shrink-0 items-center gap-1">
@@ -465,12 +479,12 @@ function createCard(printer) {
         </div>
 
         <div class="grid shrink-0 grid-cols-2 gap-2">
-          <button class="tile p-2 text-left transition hover:line" data-action="open-temp" title="Set temperatures">
+          <button class="tile tile-inline p-2 text-left transition hover:line" data-action="open-temp" title="Set temperatures">
             <span class="block text-[9px] uppercase tracking-wider t-mut">Nozzle</span>
             <span class="font-mono text-base font-bold leading-tight" data-r="nozzle"></span>
             <span class="block font-mono text-[10px] t-mut" data-r="nozzleTarget"></span>
           </button>
-          <button class="tile p-2 text-left transition hover:line" data-action="open-temp" title="Set temperatures">
+          <button class="tile tile-inline p-2 text-left transition hover:line" data-action="open-temp" title="Set temperatures">
             <span class="block text-[9px] uppercase tracking-wider t-mut">Bed</span>
             <span class="font-mono text-base font-bold leading-tight" data-r="bed"></span>
             <span class="block font-mono text-[10px] t-mut" data-r="bedTarget"></span>
@@ -501,10 +515,6 @@ function createCard(printer) {
 
         <div class="hidden shrink-0 space-y-0.5 pt-1 font-mono text-[10px]" data-r="alerts"></div>
 
-        <div class="mt-auto space-y-0.5 pt-1 font-mono text-[9px] t-mut">
-          <div data-role="cam-line-1" class="truncate"></div>
-          <div data-role="cam-line-2" class="truncate"></div>
-        </div>
       </div>
 
       <!-- right: the tabbed control panel -->
@@ -530,9 +540,7 @@ function createCard(printer) {
       overlay: root.querySelector('[data-role="cam-overlay"]'),
       status: root.querySelector('[data-role="cam-status"]'),
       box: root.querySelector('[data-role="cam-box"]'),
-      snap: root.querySelector('[data-role="cam-snap"]'),
-      line1: root.querySelector('[data-role="cam-line-1"]'),
-      line2: root.querySelector('[data-role="cam-line-2"]')
+      snap: root.querySelector('[data-role="cam-snap"]')
     },
     destroy() { stopCamera(this); if (this.observer) this.observer.disconnect(); }
   };
@@ -624,10 +632,13 @@ function updateCard(printer, entry) {
   refs.stage.textContent = (printer.layer && printer.totalLayers) ? `layer ${printer.layer}/${printer.totalLayers}` : '';
   refs.remaining.textContent = printing ? `~${formatDuration(printer.remainingSec)} left` : '';
 
-  if (entry.camRefs) {
-    entry.camRefs.line1.textContent = `${printer.ip} · ${printer.sn}`;
-    entry.camRefs.line2.textContent = (printer.ipcam && printer.ipcam.resolution)
-      ? `${printer.ipcam.resolution} · ${printer.ipcam.ipcam_record || ''}` : '';
+  // fullscreen HUD readouts (only visible when the camera box is fullscreen)
+  if (refs.hudNozzle) {
+    refs.hudNozzle.textContent = `${printer.nozzleTemp}°`;
+    refs.hudBed.textContent = `${printer.bedTemp}°`;
+    refs.hudProgress.textContent = `${Math.round(printer.progress || 0)}%`;
+    refs.hudJob.textContent = printer.job || 'None';
+    refs.hudRemaining.textContent = printing ? `~${formatDuration(printer.remainingSec)} left` : '';
   }
 
   // errors / HMS codes, formatted the way the printer shows them
@@ -780,13 +791,58 @@ function skipSignature(p) {
     objects.map((o) => `${o.id}:${o.name}:${o.tool}`).join(','),
     p.objectIndex == null ? '' : p.objectIndex,
     (p.skippedIds || []).join('.'),
-    p.status
+    p.status,
+    plateGeomFor(p) ? 'bed' : 'text'
   ].join('|');
+}
+
+// The plate number is baked into the file name ("..._plate_2.3mf"); sliced
+// projects always have plate 1.
+function plateFromJob(filename) {
+  const match = /_plate_(\d+)/.exec(filename || '');
+  return match ? Number(match[1]) : 1;
+}
+
+// Fetch the sliced plate geometry once per filename so telemetry ticks do not
+// refetch it. Returns the cached data, or null while it is loading or when the
+// project has none (the caller then falls back to the text list).
+function plateGeomFor(printer) {
+  if (!printer || !printer.job) return null;
+  const key = printer.job;
+  if (Object.prototype.hasOwnProperty.call(state.plateGeom, key)) {
+    return state.plateGeom[key];
+  }
+  if (state.plateGeomPending[key]) return null;
+  state.plateGeomPending[key] = true;
+  const path = (state.printPath && state.printPath[printer.id]) || ('/' + printer.job);
+  const plate = plateFromJob(printer.job);
+  api(`/api/printers/${printer.id}/files/objects?path=${encodeURIComponent(path)}&plate=${plate}`)
+    .then((data) => {
+      state.plateGeom[key] = (data && Array.isArray(data.objects) && data.objects.length)
+        ? data : null;
+    })
+    .catch(() => { state.plateGeom[key] = null; })
+    .then(() => { scheduleRender(); });
+  return null;
+}
+
+// State of a bed object by its slicer index, which is the order the printer
+// reports its live object list in.
+function bedObjectState(p, index) {
+  const cur = p.objectIndex;
+  if (cur == null) return 'todo';
+  if (index < cur) return 'done';
+  if (index === cur) return 'current';
+  if (index === cur + 1) return 'next';
+  return 'todo';
 }
 
 function skipObjectsHtml(p) {
   const objects = Array.isArray(p.objects) ? p.objects : [];
   const printing = p.status === 'running' || p.status === 'paused';
+  const geom = p.job ? plateGeomFor(p) : null;
+
+  if (geom && geom.objects.length) return skipBedHtml(p, geom, printing);
 
   if (!objects.length) {
     return `
@@ -844,6 +900,67 @@ function skipObjectsHtml(p) {
 
       <p class="font-mono text-[10px] t-mut">
         Sends the object id over MQTTS; the printer drops that part and keeps the rest.
+      </p>
+    </div>`;
+}
+
+// Top-down bed diagram: the same shape the printer's own skip screen draws.
+// Each rectangle is one object at its real plate position; tapping it skips
+// that object. The slicer and the printer report objects in the same order, so
+// geometry is correlated to the live list by index.
+function skipBedHtml(p, geom, printing) {
+  const objects = Array.isArray(p.objects) ? p.objects : [];
+  const cur = p.objectIndex;
+  const current = cur == null ? null : objects.find((o) => o.id === cur);
+  const next = cur == null ? null : objects.find((o) => o.id === cur + 1);
+  const queued = Array.isArray(p.skippedIds) ? p.skippedIds : [];
+  const bedW = (geom.bed && geom.bed[0]) || 256;
+  const bedH = (geom.bed && geom.bed[1]) || 256;
+
+  const rects = geom.objects.map((g, i) => {
+    const live = objects[i];
+    const skipId = live ? live.id : g.id;
+    const s = queued.indexOf(skipId) >= 0 ? 'queued' : bedObjectState(p, i);
+    const bb = g.bbox || [0, 0, 1, 1];
+    const w = Math.max(1, bb[2] - bb[0]);
+    const h = Math.max(1, bb[3] - bb[1]);
+    const x = bb[0];
+    // plate Y grows away from the viewer, screen Y grows down -> flip it
+    const y = Math.max(0, bedH - bb[3]);
+    const label = escapeHtml((live && objectText(live, i)) || g.name || `Object ${i + 1}`);
+    const tag = s === 'queued' ? ' · skip queued' : s === 'current' ? ' · printing'
+      : s === 'done' ? ' · printed' : s === 'next' ? ' · next up' : '';
+    return `<rect class="bed-obj is-${s}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"
+              data-action="skip" data-value="${skipId}" ${printing ? '' : 'data-disabled="1"'}
+              role="button" tabindex="0" aria-label="${label}${tag}"><title>${label}${tag}</title></rect>`;
+  }).join('');
+
+  return `
+    <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
+      <div class="flex items-center justify-between gap-2">
+        <span class="chip chip-ok">Object ${cur == null ? '-' : cur + 1} of ${geom.objects.length}</span>
+        <span class="font-mono text-[10px] t-mut">${printing ? 'job active' : 'start a job to skip'}</span>
+      </div>
+
+      <div class="mt-2 flex gap-2">
+        ${btn('Skip current', 'skip', {
+          cls: 'flex-1 btn-primary',
+          data: { value: current ? current.id : '' },
+          disabled: !current || !printing
+        })}
+        ${btn('Skip next', 'skip', {
+          cls: 'flex-1',
+          data: { value: next ? next.id : '' },
+          disabled: !next || !printing
+        })}
+      </div>
+
+      <svg class="bed-svg" viewBox="0 0 ${bedW} ${bedH}" role="img"
+           aria-label="Build plate with ${geom.objects.length} objects">${rects}</svg>
+
+      <p class="font-mono text-[10px] t-mut">
+        Tap an object to skip it. Sends the object id over MQTTS; the printer drops that part
+        and keeps the rest.
       </p>
     </div>`;
 }
@@ -1106,14 +1223,10 @@ function temperatureHtml(p) {
       ${row('bed', 'Bed', 130, p.bedTarget || 0, p.bedTemp || 0)}
 
       <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border line surface-2 p-3">
-        <label class="flex items-center gap-2 font-mono text-[11px] t-body">
-          <input type="checkbox" data-role="confirm-thermal" class="accent-bambu">
-          Confirm: apply these setpoints
-        </label>
-        <div class="flex gap-1.5">
-          <button class="btn btn-ghost" data-action="cooldown">All to 0°</button>
-          <button class="btn btn-primary" data-action="apply-temps">Apply targets</button>
-        </div>
+        <p class="font-mono text-[10px] t-mut">
+          Drag a slider, or tap a preset — it is sent when you let go, with no separate apply step.
+        </p>
+        <button class="btn btn-ghost" data-action="cooldown">All to 0°</button>
       </div>
       <p class="font-mono text-[10px] t-mut">
         Caps: nozzle ≤ 300°C, bed ≤ 130°C, chamber ≤ 60°C. Changing targets mid-print needs the
@@ -1630,31 +1743,18 @@ async function handleAction(printerId, el, entry) {
     }
     case 'preset': {
       const body = el.closest('[data-r="panel"]');
-      setTempInputs(body, {
+      const values = {
         nozzle: Number(el.dataset.nozzle), bed: Number(el.dataset.bed), chamber: Number(el.dataset.chamber)
-      });
-      toast('Preset filled — press Apply'); break;
-    }
-    case 'cooldown':
-      setTempInputs(el.closest('[data-r="panel"]'), { nozzle: 0, bed: 0, chamber: 0 });
-      toast('Cool-down filled — press Apply'); break;
-    case 'apply-temps': {
-      const body = el.closest('[data-r="panel"]');
-      const confirm = body.querySelector('[data-role="confirm-thermal"]');
-      if (!confirm || !confirm.checked) { toast('Tick "Confirm: apply these setpoints" first', 'warn'); return; }
-      const allow = body.querySelector('[data-role="allow-while-printing"]');
-      const payload = {
-        nozzle: readTemp(body, 'nozzle'), bed: readTemp(body, 'bed'),
-        confirm_thermal: true, allow_while_printing: Boolean(allow && allow.checked)
       };
-      // only send chamber when the tile is present
-      if (body.querySelector('[data-role="input-chamber"]')) payload.chamber = readTemp(body, 'chamber');
-      try {
-        await api(`/api/printers/${printerId}/temperature`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-        });
-        success('setpoints applied');
-      } catch (err) { toast(err.message, 'error'); }
+      setTempInputs(body, values);
+      if (await sendTemps(printerId, values, body)) success(`${el.textContent.trim()} sent`);
+      break;
+    }
+    case 'cooldown': {
+      const body = el.closest('[data-r="panel"]');
+      const values = { nozzle: 0, bed: 0, chamber: 0 };
+      setTempInputs(body, values);
+      if (await sendTemps(printerId, values, body)) success('cool-down sent');
       break;
     }
     case 'refresh-files': loadFiles(printerId, entry.fileCache.path, true); break;
@@ -1700,6 +1800,7 @@ async function handleAction(printerId, el, entry) {
           body: JSON.stringify({ filename: file, dir_path: '/' })
         });
         toast(`sent ${r.name} to ${printer ? printer.name : printerId}`);
+        state.printPath[printerId] = r.path;
         await openPrintDialog(printerId, r.path);
       } catch (err) {
         toast(err.message, 'error');
@@ -1828,6 +1929,29 @@ function setTempInputs(body, values) {
     if (slider) slider.value = value;
     if (input) input.value = value;
   });
+}
+
+// Send one or more setpoints. The UI always sets confirm_thermal: the user
+// confirmed by releasing a slider or tapping a preset. The allow-while-printing
+// tick rides along on every send.
+async function sendTemps(printerId, values, body) {
+  if (!body) return false;
+  const payload = { confirm_thermal: true };
+  ['nozzle', 'bed', 'chamber'].forEach((key) => {
+    if (values[key] === undefined || values[key] === null) return;
+    // only send chamber when that tile exists on this printer
+    if (key === 'chamber' && !body.querySelector('[data-role="input-chamber"]')) return;
+    payload[key] = values[key];
+  });
+  if (Object.keys(payload).length === 1) return false;   // nothing but the flag
+  const allow = body.querySelector('[data-role="allow-while-printing"]');
+  payload.allow_while_printing = Boolean(allow && allow.checked);
+  try {
+    await api(`/api/printers/${printerId}/temperature`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    return true;
+  } catch (err) { toast(err.message, 'error'); return false; }
 }
 
 function systemHtml(p) {
@@ -2555,13 +2679,14 @@ function colorDistance(a, b) {
 
 function trayOptions() {
   const plan = state.print && state.print.plan;
-  const options = [{ value: -1, short: 'None', label: 'None', color: '' }];
+  const options = [{ value: -1, short: 'None', label: 'None', color: '', remain: -1 }];
   ((plan && plan.trays) || []).forEach((t) => {
     options.push({
       value: t.index,
       short: `T${t.tray_id + 1}`,
       label: `AMS${t.ams_id + 1} T${t.tray_id + 1} · ${t.type || '?'}`,
-      color: t.color ? '#' + t.color : ''
+      color: t.color ? '#' + t.color : '',
+      remain: t.remain
     });
   });
   if (plan && plan.external) {
@@ -2569,10 +2694,16 @@ function trayOptions() {
       value: 255,
       short: 'EXT',
       label: `External spool · ${plan.external.type || '?'}`,
-      color: plan.external.color ? '#' + plan.external.color : ''
+      color: plan.external.color ? '#' + plan.external.color : '',
+      remain: -1
     });
   }
   return options;
+}
+
+function trayOptionFor(value) {
+  const options = trayOptions();
+  return options.find((o) => o.value === Number(value)) || options[0];
 }
 
 function autoMapFilament(filament) {
@@ -2621,31 +2752,34 @@ function renderPrintDialog() {
     <div class="flex justify-between"><span class="t-mut">Est. time</span><span>${mins ? mins + ' min' : '—'}</span></div>
     <div class="flex justify-between"><span class="t-mut">Filament</span><span>${info.weight_g ? info.weight_g.toFixed(1) + ' g' : '—'}</span></div>`;
 
-  // filaments + mapping: one row per filament with a native picker. A native
-  // <select> is the most touch-friendly control there is - on a phone it opens
-  // the OS picker, which is large, scrollable and accessible.
-  const options = trayOptions();
+  // filaments + mapping: one row per filament, each opening a colour-aware tray
+  // picker modal. A native <select> cannot show the tray colours, which is
+  // exactly what the mapping decision needs.
   const filaments = info.filaments || [];
   $('print-filaments').innerHTML = filaments.length ? filaments.map((f) => {
-    const chosen = state.print.mapping[f.id] !== undefined ? state.print.mapping[f.id] : autoMapFilament(f);
-    state.print.mapping[f.id] = chosen;
     const auto = autoMapFilament(f);
-    const opts = options.map((o) => {
-      const mark = o.value === auto && o.value !== -1 ? ' (best match)' : '';
-      return `<option value="${o.value}"${o.value === chosen ? ' selected' : ''}>${
-        escapeHtml(o.label)}${mark}</option>`;
-    }).join('');
+    const chosen = state.print.mapping[f.id] !== undefined ? state.print.mapping[f.id] : auto;
+    state.print.mapping[f.id] = chosen;
+    const option = trayOptionFor(chosen);
+    const best = chosen === auto && chosen !== -1;
     return `
-      <label class="filament-map">
+      <div class="filament-map">
         <span class="filament-map-swatch" style="background:#${escapeHtml(f.color || '888888')}"></span>
         <span class="filament-map-text">
           <span class="filament-map-title">${escapeHtml(f.type || 'filament')} #${escapeHtml(String(f.id || 1))}</span>
           <span class="filament-map-sub">#${escapeHtml(f.color || '------')}${
             f.used_g ? ' · ' + f.used_g.toFixed(1) + ' g' : ''}</span>
         </span>
-        <select class="field filament-map-select" data-role="map-filament" data-filament="${f.id}"
-                aria-label="Tray for ${escapeHtml(f.type || 'filament')} ${escapeHtml(String(f.id || 1))}">${opts}</select>
-      </label>`;
+        <button type="button" class="filament-map-pick" data-action="pick-tray" data-filament="${f.id}"
+                aria-label="Tray for ${escapeHtml(f.type || 'filament')} ${escapeHtml(String(f.id || 1))}">
+          <span class="filament-map-swatch"${option.color ? ` style="background:${escapeHtml(option.color)}"` : ''}></span>
+          <span class="min-w-0 flex-1">
+            <span class="filament-map-pick-label">${escapeHtml(option.label)}</span>
+            ${best ? '<span class="filament-map-pick-best">best match</span>' : ''}
+          </span>
+          <span class="t-accent">▸</span>
+        </button>
+      </div>`;
   }).join('') : '<p class="font-mono text-[10px] t-mut">No filament information in this project.</p>';
 
   // options
@@ -2655,6 +2789,48 @@ function renderPrintDialog() {
     <label class="flex items-center gap-2"><input type="checkbox" data-opt="flow_cali" class="accent-bambu" checked> Flow calibration</label>
     <label class="flex items-center gap-2"><input type="checkbox" data-opt="vibration_cali" class="accent-bambu" checked> Vibration calibration</label>
     <label class="flex items-center gap-2"><input type="checkbox" data-opt="timelapse" class="accent-bambu" checked> Timelapse</label>`;
+}
+
+function openTrayPicker(filamentId) {
+  if (!state.print || !state.print.plan) return;
+  state.trayPicker = { filamentId: Number(filamentId) };
+  renderTrayPicker();
+  $('modal-tray').classList.replace('hidden', 'flex');
+}
+
+function closeTrayPicker() {
+  state.trayPicker = null;
+  $('modal-tray').classList.replace('flex', 'hidden');
+}
+
+function renderTrayPicker() {
+  const pick = state.trayPicker;
+  if (!pick || !state.print || !state.print.plan) return;
+  const plan = state.print.plan;
+  const plateInfo = (plan.plates || []).find((pl) => pl.index === state.print.plate) || {};
+  const filament = (plateInfo.filaments || []).find((f) => f.id === pick.filamentId);
+  const auto = filament ? autoMapFilament(filament) : -1;
+  const chosen = state.print.mapping[pick.filamentId] !== undefined
+    ? state.print.mapping[pick.filamentId] : auto;
+
+  $('tray-title').textContent = filament
+    ? `Choose filament for ${filament.type || 'filament'} #${filament.id || 1}`
+    : 'Choose filament';
+  $('tray-sub').textContent = 'Tap a tray to map this slot. A blank swatch is an empty slot.';
+
+  $('tray-options').innerHTML = trayOptions().map((o) => {
+    const best = o.value === auto && o.value !== -1;
+    const remain = (o.remain != null && o.remain >= 0) ? `${Math.round(o.remain)}% left` : '';
+    return `<button type="button" class="tray-option${o.value === chosen ? ' is-active' : ''}"
+              data-tray-option="${o.value}">
+      <span class="tray-swatch"${o.color ? ` style="background:${escapeHtml(o.color)}"` : ''}></span>
+      <span class="min-w-0 flex-1">
+        <span class="tray-option-label">${escapeHtml(o.label)}</span>
+        ${remain ? `<span class="tray-option-sub">${escapeHtml(remain)}</span>` : ''}
+      </span>
+      ${best ? '<span class="tray-best">best match</span>' : ''}
+    </button>`;
+  }).join('');
 }
 
 async function openPrintDialog(printerId, path) {
@@ -2708,6 +2884,7 @@ async function startPrintFromDialog() {
         timelapse: opt('timelapse', true),
       })
     });
+    state.printPath[printerId] = plan.path;
     toast(`${res.job} → ${res.printer}`);
     closePrintDialog();
   } catch (err) {
@@ -2740,6 +2917,18 @@ function wireStatic() {
     const b = e.target.closest('[data-print-plate]');
     if (b) { state.print.plate = Number(b.dataset.printPlate); renderPrintDialog(); }
   });
+  $('print-filaments').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-action="pick-tray"]');
+    if (b) openTrayPicker(Number(b.dataset.filament));
+  });
+  $('tray-options').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tray-option]');
+    if (!b || !state.trayPicker) return;
+    if (state.print) state.print.mapping[state.trayPicker.filamentId] = Number(b.dataset.trayOption);
+    renderPrintDialog();
+    closeTrayPicker();
+  });
+  $('tray-close').addEventListener('click', closeTrayPicker);
   $('settings-cancel').addEventListener('click', closeSettings);
   $('update-check').addEventListener('click', checkForUpdates);
   $('update-download').addEventListener('click', downloadUpdate);
@@ -2787,10 +2976,14 @@ function wireStatic() {
       return;
     }
 
-    // Filament mapping pickers in the print dialog
-    if (role === 'map-filament') {
-      const id = Number(e.target.dataset.filament);
-      if (state.print) state.print.mapping[id] = Number(e.target.value);
+    // Temperature: a slider fires 'change' on release, so one command per drag
+    if (role === 'slider-nozzle' || role === 'slider-bed' || role === 'slider-chamber') {
+      const card = e.target.closest('[data-card-id]');
+      const id = card && card.dataset.cardId;
+      if (!id) return;
+      const body = card.querySelector('[data-r="panel"]');
+      const key = role.slice('slider-'.length);
+      await sendTemps(id, { [key]: Number(e.target.value) || 0 }, body);
       return;
     }
 

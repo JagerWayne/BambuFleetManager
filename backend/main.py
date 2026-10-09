@@ -900,6 +900,51 @@ def parse_slice_info(xml_text: str) -> List[dict]:
     return sorted(plates, key=lambda p: p["index"])
 
 
+#: Printable area of an X1-family build plate, in millimetres. Used as the
+#: top-down diagram's bed when a sliced project does not say otherwise.
+BED_SIZE_MM = 256
+
+
+def parse_plate_geometry(json_text: str) -> dict:
+    """Parse ``Metadata/plate_N.json`` into a top-down bed diagram.
+
+    The printer's own skip screen draws each object at the plate position the
+    slicer recorded, so the dashboard can show the same thing. ``bbox`` is
+    ``[x0, y0, x1, y1]`` in millimetres and the objects keep the slicer order
+    (which is also the order the printer reports its live object list in).
+    """
+    bed = [BED_SIZE_MM, BED_SIZE_MM]
+    empty = {"bed": bed, "bbox_all": [], "objects": []}
+    try:
+        data = json.loads(json_text)
+    except Exception as exc:
+        logger.debug("Could not parse plate json: %s", exc)
+        return empty
+    if not isinstance(data, dict):
+        return empty
+
+    bbox_all = data.get("bbox_all")
+    if not (isinstance(bbox_all, (list, tuple)) and len(bbox_all) == 4):
+        bbox_all = []
+
+    objects = []
+    for obj in (data.get("bbox_objects") or []):
+        if not isinstance(obj, dict):
+            continue
+        bbox = obj.get("bbox")
+        if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
+            continue
+        try:
+            objects.append({
+                "id": int(obj.get("id") or 0),
+                "name": str(obj.get("name") or ""),
+                "bbox": [float(v) for v in bbox],
+            })
+        except (TypeError, ValueError):
+            continue
+    return {"bed": bed, "bbox_all": bbox_all, "objects": objects}
+
+
 def available_trays(printer_id: str) -> dict:
     """Flatten the printer's AMS trays + external spool for the mapping dialog."""
     report = latest_reports.get(printer_id) or {}
@@ -1126,6 +1171,57 @@ async def print_plate(
             return Response(content=data, media_type="image/png",
                             headers={"Cache-Control": "no-store"})
     raise HTTPException(status_code=404, detail="No thumbnail for that plate")
+
+
+@app.get("/api/printers/{printer_id}/files/objects")
+async def print_objects(
+    printer_id: str,
+    path: str = Query(..., max_length=512),
+    plate: Optional[int] = Query(None, ge=1),
+):
+    """Per-object plate geometry for the top-down "skip object" bed diagram.
+
+    Reads ``Metadata/plate_<n>.json`` (and ``slice_info.config`` to default the
+    plate index when the caller does not name one). Objects are returned in the
+    slicer order the printer reports its live list in, so the dashboard can
+    correlate the two by index.
+    """
+    printer = get_printer(printer_id)
+    target = normalize_remote_path(path)
+
+    if plate is None:
+        try:
+            entries = await run_blocking(
+                read_remote_zip_entries, printer.ip, printer.access_code, target,
+                ["Metadata/slice_info.config"],
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not read the project: {exc}")
+        raw = entries.get("Metadata/slice_info.config")
+        plates = parse_slice_info(raw.decode("utf-8", "replace")) if raw else []
+        if plates:
+            plate = plates[0]["index"] or 1
+        else:
+            detected = await run_blocking(
+                detect_plate_indices, printer.ip, printer.access_code, target
+            )
+            plate = detected[0] if detected else 1
+
+    entry = f"Metadata/plate_{plate}.json"
+    try:
+        entries = await run_blocking(
+            read_remote_zip_entries, printer.ip, printer.access_code, target, [entry]
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not read the project: {exc}")
+    raw = entries.get(entry)
+    if not raw:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No {entry} in the project - it is not a sliced 3MF with a plate map.",
+        )
+    geometry = parse_plate_geometry(raw.decode("utf-8", "replace"))
+    return {"path": target, "plate": plate, **geometry}
 
 
 # ------------------------------------------------------------------ controls

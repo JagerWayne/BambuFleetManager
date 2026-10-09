@@ -216,18 +216,28 @@ function telemetry(data) {
   check('plan requested', calls.some((c) => c.url.includes('/files/plan')));
   check('print dialog opened', !doc.getElementById('modal-print').classList.contains('hidden'));
 
-  /* --- filament mapping: one native picker per filament ----------------- */
-  const picks = doc.querySelectorAll('#print-filaments [data-role="map-filament"]');
+  /* --- filament mapping: one tappable tray button per filament ---------- */
+  const picks = doc.querySelectorAll('#print-filaments [data-action="pick-tray"]');
   check('a picker per filament', picks.length >= 1, String(picks.length));
-  check('the picker lists the trays and the external spool', picks[0] && picks[0].options.length === 3,
-    picks[0] && [...picks[0].options].map((o) => o.textContent).join(' | '));
-  check('the auto-mapped tray is preselected', picks[0] && picks[0].value === '2', picks[0] && picks[0].value);
-  check('the best match is marked', picks[0] && picks[0].options[1].textContent.includes('best match'),
-    picks[0] && picks[0].options[1].textContent);
+  check('the picker shows the chosen tray', picks[0] && picks[0].textContent.includes('AMS1 T1'),
+    picks[0] && picks[0].textContent.trim());
+  check('the best match is marked', picks[0] && picks[0].textContent.includes('best match'),
+    picks[0] && picks[0].textContent.trim());
+
+  // tapping a row opens the tray modal, which shows every option as a swatch
+  picks[0].click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('tray picker opens', !doc.getElementById('modal-tray').classList.contains('hidden'));
+  const trayOpts = doc.querySelectorAll('#tray-options [data-tray-option]');
+  check('tray picker lists None + trays + external', trayOpts.length === 3, String(trayOpts.length));
+  check('tray picker draws colour swatches', Boolean(doc.querySelector('#tray-options .tray-swatch')));
+  check('tray picker marks the best match', [...trayOpts].some((o) => o.textContent.includes('best match')));
 
   // choosing a different tray must reach the print request
-  picks[0].value = '255';                       // the external spool
-  picks[0].dispatchEvent(new window.Event('change', { bubbles: true }));
+  doc.querySelector('#tray-options [data-tray-option="255"]').click();  // the external spool
+  await new Promise((r) => setTimeout(r, 20));
+  check('tray picker closes after choosing',
+    doc.getElementById('modal-tray').classList.contains('hidden'));
   calls.length = 0;
   doc.getElementById('print-start').click();
   await new Promise((r) => setTimeout(r, 40));

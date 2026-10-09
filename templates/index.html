@@ -217,6 +217,22 @@
   </div>
 </div>
 
+<!-- ================================================== tray picker modal
+     Opened from a filament row in the print preview. A native <select> hides
+     the tray colours, so the options are laid out here as swatches. -->
+<div id="modal-tray" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-md p-5" role="dialog" aria-modal="true" aria-labelledby="tray-title">
+    <div class="mb-3 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 id="tray-title" class="text-base font-bold t-strong">Choose filament</h3>
+        <p id="tray-sub" class="truncate font-mono text-[10px] t-mut"></p>
+      </div>
+      <button type="button" id="tray-close" class="icon-btn shrink-0" aria-label="Close">✕</button>
+    </div>
+    <div id="tray-options" class="space-y-2"></div>
+  </div>
+</div>
+
 <!-- =============================================== filament editor -->
 <div id="modal-filament" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
   <div class="modal-panel card w-full max-w-sm p-5" role="dialog" aria-modal="true" aria-labelledby="filament-heading">
