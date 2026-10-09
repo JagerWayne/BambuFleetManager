@@ -23,7 +23,9 @@ Browser ──REST/WS──► FastAPI ──MQTTS 8883──► printers
 - **Light & dark themes**, remembered per browser; the choice follows the OS until changed.
 - **Responsive / touch friendly.** Single-column on phones, camera-column layout on desktop.
 - **Full job control:** pause / resume / stop / recover, speed profiles (Silent → Ludicrous),
-  skip-object, chamber + work lighting.
+  chamber + work lighting.
+- **Skip object,** with the printer's own object list: see which object is printing, which is
+  next, and which are already done, then skip the current or next one by name.
 - **Print preview dialog.** Pick the plate, preview the render, read time & filament weight,
   and map each filament to an AMS tray or the external spool (auto-mapped by colour).
 - **AMS management.** Per-unit trays with real colour swatches, remaining bar, humidity,
