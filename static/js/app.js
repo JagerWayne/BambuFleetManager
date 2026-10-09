@@ -567,6 +567,9 @@ function createCard(printer) {
                class="hidden h-full w-full object-contain">
           <img data-role="cam-snap" alt="snapshot"
                class="pointer-events-none absolute inset-0 hidden h-full w-full object-contain">
+          <!-- progress ring: the border fills clockwise from the bottom-left
+               while a job is running; clicks pass straight through -->
+          <div class="cam-ring" data-r="camRing" aria-hidden="true"></div>
           <div data-role="cam-overlay"
                class="absolute inset-0 grid place-items-center px-3 text-center font-mono text-[10px] t-mut">
             Connecting to camera…
@@ -588,6 +591,14 @@ function createCard(printer) {
           </div>
         </div>
 
+        <!-- live job line, patched via refs (never re-serialised) -->
+        <div class="cam-info hidden" data-r="camInfo">
+          <span class="min-w-0 flex-1 truncate" data-r="camJob"></span>
+          <span class="shrink-0" data-r="camLayer"></span>
+          <span class="shrink-0 t-accent" data-r="camPct"></span>
+          <span class="shrink-0" data-r="camRemaining"></span>
+        </div>
+
         <div class="grid shrink-0 grid-cols-2 gap-2">
           <button class="tile tile-inline p-2 text-left transition hover:line" data-action="open-temp" title="Set temperatures">
             <span class="block text-[9px] uppercase tracking-wider t-mut">Nozzle</span>
@@ -600,28 +611,6 @@ function createCard(printer) {
             <span class="block font-mono text-[10px] t-mut" data-r="bedTarget"></span>
           </button>
         </div>
-
-        <button class="tile flex shrink-0 items-center justify-between gap-2 p-2 text-left transition hover:line"
-                data-action="speed-modal" title="Change speed profile">
-          <span class="min-w-0">
-            <span class="block text-[9px] uppercase tracking-wider t-mut">Speed</span>
-            <span class="block truncate font-mono text-sm font-bold t-strong" data-r="speed"></span>
-          </span>
-          <span class="shrink-0 font-mono text-[10px] t-accent">change ▸</span>
-        </button>
-
-        <button class="tile shrink-0 p-2 text-left transition hover:line" data-action="open-control" title="Job details">
-          <span class="mb-1 flex items-baseline justify-between gap-2 font-mono text-[11px]">
-            <span class="truncate t-body" data-r="job"></span>
-            <span class="shrink-0 font-bold t-accent" data-r="progress"></span>
-          </span>
-          <span class="block h-2 w-full overflow-hidden rounded-full surface-3">
-            <span class="block h-full rounded-full bg-gradient-to-r from-bambu-dark to-bambu transition-all duration-500" data-r="bar" style="width:0%"></span>
-          </span>
-          <span class="mt-1 flex justify-between font-mono text-[10px] t-mut">
-            <span data-r="stage"></span><span data-r="remaining"></span>
-          </span>
-        </button>
 
         <div class="hidden shrink-0 space-y-0.5 pt-1 font-mono text-[10px]" data-r="alerts"></div>
 
@@ -734,13 +723,27 @@ function updateCard(printer, entry) {
   refs.bed.textContent = `${printer.bedTemp}°`;
   refs.bed.className = `font-mono text-base font-bold leading-tight ${printer.bedTemp > 40 ? 't-warn' : 't-body'}`;
   refs.bedTarget.textContent = printer.bedTarget ? `→ ${printer.bedTarget}°` : 'idle';
-  refs.speed.textContent = speedLabel(printer) || '–';
 
-  refs.job.textContent = printer.job || 'None';
-  refs.progress.textContent = `${Math.round(printer.progress || 0)}%`;
-  refs.bar.style.width = `${Math.max(0, Math.min(100, printer.progress || 0))}%`;
-  refs.stage.textContent = (printer.layer && printer.totalLayers) ? `layer ${printer.layer}/${printer.totalLayers}` : '';
-  refs.remaining.textContent = printing ? `~${formatDuration(printer.remainingSec)} left` : '';
+  // progress ring around the camera + the info strip under it. The ring is
+  // driven through a custom property so the transition animates smoothly where
+  // @property is supported (instant jump otherwise).
+  const activePrint = printing || printer.status === 'paused' || printer.status === 'prepare';
+  const pct = Math.max(0, Math.min(100, printer.progress || 0));
+  if (refs.camRing) {
+    refs.camRing.classList.toggle('is-active', activePrint);
+    refs.camRing.style.setProperty('--progress', String(pct / 100));
+  }
+  if (refs.camInfo) {
+    refs.camInfo.classList.toggle('hidden', !activePrint);
+    if (activePrint) {
+      refs.camJob.textContent = printer.job || 'None';
+      refs.camLayer.textContent = (printer.layer && printer.totalLayers)
+        ? `L ${printer.layer}/${printer.totalLayers}` : '';
+      refs.camPct.textContent = `${Math.round(pct)}%`;
+      refs.camRemaining.textContent = printer.remainingSec
+        ? `~${formatDuration(printer.remainingSec)}` : '';
+    }
+  }
 
   // fullscreen HUD readouts (only visible when the camera box is fullscreen)
   if (refs.hudNozzle) {
@@ -853,7 +856,7 @@ function refreshLive(body, printer) {
 
   // Reprint follows the reported job, which changes under telemetry.
   const reprintBtn = body.querySelector('[data-live="reprint"]');
-  if (reprintBtn) reprintBtn.disabled = !printableJob(printer.job);
+  if (reprintBtn) reprintBtn.disabled = !lastPrintableJob(printer);
 
   // Job buttons only exist while they can do something - hide/show in place,
   // never re-serialise the panel.
@@ -1234,6 +1237,16 @@ function printableJob(job) {
   return Boolean(job) && job !== 'None' && /\.(3mf|gcode)$/i.test(baseName(job));
 }
 
+// The job we would reprint: what the printer reports, or - when a late FINISH
+// report dropped subtask_name to 'None' - the file we last sent to this
+// printer (remembered by startPrintFromDialog / staged printing).
+function lastPrintableJob(printer) {
+  if (!printer) return null;
+  if (printableJob(printer.job)) return printer.job;
+  const remembered = state.printPath && state.printPath[printer.id];
+  return printableJob(remembered) ? remembered : null;
+}
+
 // Which job buttons can currently do something - state-inappropriate buttons
 // are hidden, not merely disabled. The control panel is only rebuilt on a tab
 // change, so refreshLive() applies this on every telemetry tick against the
@@ -1247,7 +1260,11 @@ function jobButtonVisible(key, p) {
     case 'pause': return running;
     case 'resume': return paused;
     case 'stop': return running || paused;
-    case 'reprint': return !running && !paused && printableJob(p.job);
+    case 'reprint': {
+      if (running || paused) return false;
+      const endedOk = st === 'idle' || st === 'finish' || st === 'failed';
+      return endedOk && Boolean(lastPrintableJob(p));
+    }
     case 'recover':
     case 'clear-error': return failed;
     default: return true;
@@ -1353,21 +1370,36 @@ function controlHtml(p) {
   // refreshLive() keeps them tracking telemetry afterwards.
   const jb = (key) => (jobButtonVisible(key, p) ? '' : ' hidden');
 
+  // The speed tile lives at the top of the Control tab now; the label is
+  // patched by refreshLive() on every telemetry tick.
+  const speedSection = `
+    <div class="tile flex w-full items-center justify-between gap-2 p-2 text-left transition hover:line">
+      <span class="min-w-0">
+        <span class="block text-[9px] uppercase tracking-wider t-mut">Speed</span>
+        <span class="block truncate font-mono text-sm font-bold t-strong" data-live="speed-current">${
+          escapeHtml(speedLabel(p) || '–')}</span>
+      </span>
+      <button type="button" class="btn btn-ghost shrink-0 font-mono text-[10px] t-accent"
+              data-action="speed-modal" title="Change speed profile">change ▸</button>
+    </div>`;
+
   return `
     <div class="grid gap-3 xl:grid-cols-2">
+      ${section('Speed', speedSection)}
+
       ${section('Job control', `
         <div class="job-toolbar">
           <div class="job-group job-group-primary" data-job-group="primary">
-            ${btn('Pause', 'pause', { cls: 'btn-warn' + jb('pause'), data: { jobBtn: 'pause' } })}
-            ${btn('Resume', 'resume', { cls: 'btn-primary' + jb('resume'), data: { jobBtn: 'resume' } })}
-            ${btn('Stop', 'stop', { cls: 'btn-danger' + jb('stop'), data: { jobBtn: 'stop' } })}
+            ${btn('Pause', 'pause', { cls: 'btn-warn' + jb('pause'), data: { 'job-btn': 'pause' } })}
+            ${btn('Resume', 'resume', { cls: 'btn-primary' + jb('resume'), data: { 'job-btn': 'resume' } })}
+            ${btn('Stop', 'stop', { cls: 'btn-danger' + jb('stop'), data: { 'job-btn': 'stop' } })}
           </div>
           <div class="job-group job-group-reprint" data-job-group="reprint">
-            ${btn('Reprint', 'reprint', { cls: 'btn-ghost' + jb('reprint'), disabled: !printableJob(p.job), data: { live: 'reprint', jobBtn: 'reprint' } })}
+            ${btn('Reprint', 'reprint', { cls: 'btn-ghost' + jb('reprint'), disabled: !lastPrintableJob(p), data: { live: 'reprint', 'job-btn': 'reprint' } })}
           </div>
           <div class="job-group job-group-recovery" data-job-group="recovery">
-            ${btn('Recover', 'retry', { cls: 'btn-ghost' + jb('recover'), data: { jobBtn: 'recover' } })}
-            ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' + jb('clear-error'), data: { jobBtn: 'clear-error' } })}
+            ${btn('Recover', 'retry', { cls: 'btn-ghost' + jb('recover'), data: { 'job-btn': 'recover' } })}
+            ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' + jb('clear-error'), data: { 'job-btn': 'clear-error' } })}
           </div>
         </div>
         <p class="font-mono text-[10px] t-mut">State: <span data-live="status" class="t-body">${escapeHtml(p.status || 'unknown')}</span></p>
@@ -1614,7 +1646,11 @@ function filesHtml(cache, printer) {
   });
 
   const row = (f) => {
-    const printing = !f.is_dir && printer && printer.job && String(f.name) === String(printer.job);
+    // Only tag a row "printing" while the printer is actually printing -
+    // printer.job keeps reporting the last file after FINISH.
+    const activePrint = printer
+      && (printer.status === 'running' || printer.status === 'paused' || printer.status === 'prepare');
+    const printing = !f.is_dir && activePrint && printer.job && String(f.name) === String(printer.job);
     return `
       <div class="file-row${f.is_dir ? ' is-dir' : ''}${printing ? ' is-printing' : ''}">
         <button class="flex min-w-0 flex-1 items-center gap-2.5 text-left" data-action="cd"
@@ -1935,7 +1971,7 @@ async function handleAction(printerId, el, entry) {
       await post(`/api/printers/${printerId}/retry`, {}); success('recovery sent'); break;
     case 'reprint': {
       const printer = printerById(printerId);
-      if (!printer || !printableJob(printer.job)) { toast('Nothing to reprint', 'warn'); break; }
+      if (!printer || !lastPrintableJob(printer)) { toast('Nothing to reprint', 'warn'); break; }
       const path = (state.printPath && state.printPath[printerId]) || ('/' + printer.job);
       await openPrintDialog(printerId, path);
       break;

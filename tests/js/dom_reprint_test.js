@@ -30,6 +30,7 @@ window.fetch = (url, opts = {}) => {
   calls.push({ url: u, method });
   let payload = {};
   if (u.indexOf('/files/plan') >= 0) payload = PLAN;
+  else if (u.indexOf('/print-remote') >= 0) payload = { job: 'started', printer: 'X1C' };
   else if (u.endsWith('/api/printers') && method === 'GET') payload = FLEET;
   else if (u.indexOf('/api/settings') >= 0) payload = { allow_motion: false, current_port: 8000 };
   else if (u.indexOf('/api/uploads') >= 0) payload = [];
@@ -96,6 +97,47 @@ check('Reprint is disabled for a non-printable job', bare.querySelector('[data-a
   check('clicking Reprint fetches the plan for the current job', planCalls() === 1, String(planCalls()));
   check('the plan request names the current job',
     calls.some((c) => c.url.indexOf('/files/plan') >= 0 && c.url.indexOf('Cube_plate_1.gcode.3mf') >= 0));
+  window.closePrintDialog();
+
+  /* --- FINISH without subtask_name must not hide Reprint ----------------- */
+  // Repro of the field report: start a real print (which remembers the path in
+  // state.printPath), then a late FINISH report arrives with subtask_name
+  // dropped to '' so printer.job becomes 'None'. Reprint must stay visible
+  // because it also sources from the remembered last-printed file. The exact
+  // telemetry quirk could not be reproduced against a real printer locally;
+  // this models the reported report shape.
+  click(panel().querySelector('[data-action="reprint"]'));
+  await sleep(60);
+  doc.getElementById('print-start').click();
+  await sleep(60);
+  check('the print started (print-remote sent)',
+    calls.some((c) => c.url.indexOf('/print-remote') >= 0));
+  window.__ws.onmessage({
+    data: JSON.stringify({
+      event: 'telemetry', printer_id: 'n1',
+      data: { gcode_state: 'FINISH', subtask_name: '' }
+    })
+  });
+  await sleep(30);
+  const reprintAfterFinish = panel().querySelector('[data-job-btn="reprint"]');
+  check('Reprint survives a FINISH with no subtask_name',
+    Boolean(reprintAfterFinish) && !reprintAfterFinish.classList.contains('hidden'),
+    reprintAfterFinish && reprintAfterFinish.className);
+  check('Reprint stays enabled after that FINISH',
+    Boolean(reprintAfterFinish) && reprintAfterFinish.disabled === false,
+    reprintAfterFinish && String(reprintAfterFinish.disabled));
+
+  // while running/paused it stays hidden
+  window.__ws.onmessage({
+    data: JSON.stringify({
+      event: 'telemetry', printer_id: 'n1',
+      data: { gcode_state: 'RUNNING', subtask_name: 'Cube_plate_1.gcode.3mf', mc_percent: 5 }
+    })
+  });
+  await sleep(30);
+  check('Reprint hidden while running',
+    panel().querySelector('[data-job-btn="reprint"]').classList.contains('hidden'));
+
   window.closePrintDialog();
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

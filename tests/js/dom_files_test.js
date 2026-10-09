@@ -209,6 +209,23 @@ function telemetry(data) {
   panel = panelOf(card);
   check('rename re-enabled when idle', !panel.querySelector('[data-action="rename-sd"][disabled]'));
 
+  /* --- the printing tag must clear when the job ends -------------------- */
+  // printer.job keeps reporting the last file after FINISH, but the row is
+  // only "printing" while the printer is actually running/paused/preparing.
+  const finishedRow = [...panel.querySelectorAll('.file-row')].find((r) => r.textContent.includes('zeta.3mf'));
+  check('finished file no longer highlighted', Boolean(finishedRow && !finishedRow.classList.contains('is-printing')));
+  check('finished file no longer says printing', Boolean(finishedRow && !finishedRow.textContent.includes('printing')));
+
+  // paused / prepare still count as printing
+  telemetry({ gcode_state: 'PREPARE', subtask_name: 'zeta.3mf', mc_percent: 0 });
+  await new Promise((r) => setTimeout(r, 40));
+  panel = panelOf(card);
+  const prepareRow = [...panel.querySelectorAll('.file-row')].find((r) => r.textContent.includes('zeta.3mf'));
+  check('prepare counts as printing', Boolean(prepareRow && prepareRow.classList.contains('is-printing')));
+  telemetry({ gcode_state: 'IDLE', subtask_name: '' });
+  await new Promise((r) => setTimeout(r, 40));
+  panel = panelOf(card);
+
   /* --- Print still opens the preview dialog ---------------------------- */
   calls.length = 0;
   panel.querySelector('[data-action="print-sd"]').click();
