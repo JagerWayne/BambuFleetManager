@@ -1,6 +1,12 @@
 import pytest
 
-from backend.models import LightCommand, PrintDispatchCommand, PrinterConfig, SpeedCommand
+from backend.models import (
+    LightCommand,
+    PrintDispatchCommand,
+    PrinterConfig,
+    PrintRemoteCommand,
+    SpeedCommand,
+)
 
 
 def test_printer_config_validation():
@@ -57,6 +63,25 @@ def test_dispatch_command_rejects_foreign_extension():
 def test_light_command_accepts_both_states():
     assert LightCommand(state=True).state is True
     assert LightCommand(state=False).state is False
+
+
+def test_skip_object_ids_default_to_absent():
+    assert PrintDispatchCommand(printer_id="node_01", filename="benchy.3mf").skip_object_ids is None
+    assert PrintRemoteCommand(path="/benchy.3mf").skip_object_ids is None
+
+
+def test_skip_object_ids_accept_ints_only():
+    assert PrintRemoteCommand(path="/a.3mf", skip_object_ids=[60, 112]).skip_object_ids == [60, 112]
+    with pytest.raises(Exception):
+        PrintRemoteCommand(path="/a.3mf", skip_object_ids=["not-an-id"])
+    with pytest.raises(Exception):
+        PrintRemoteCommand(path="/a.3mf", skip_object_ids=[1.5])
+    # a plate cannot hold 65 objects, and the cap bounds the request
+    with pytest.raises(Exception):
+        PrintRemoteCommand(path="/a.3mf", skip_object_ids=list(range(65)))
+    with pytest.raises(Exception):
+        PrintDispatchCommand(printer_id="node_01", filename="benchy.3mf",
+                             skip_object_ids=list(range(65)))
 
 
 def test_server_settings_defaults_and_bounds():

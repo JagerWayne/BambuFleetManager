@@ -67,6 +67,9 @@ class PrintDispatchCommand(BaseModel):
     vibration_cali: bool = True
     timelapse: bool = True
     use_ams: bool = True
+    #: Object ids (slice_info ``identify_id`` values) to skip as soon as the job
+    #: starts printing. Applied server-side so it does not depend on the browser.
+    skip_object_ids: Optional[List[int]] = Field(None, max_length=64)
 
     @field_validator("filename")
     @classmethod
@@ -100,6 +103,8 @@ class DispatchResponse(BaseModel):
     status: str
     printer: Optional[str] = None
     job: Optional[str] = None
+    #: Object ids actually published as ``skip_objects`` when the print started.
+    skipped: List[int] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------ commands
@@ -304,6 +309,9 @@ class PrintRemoteCommand(RemotePath):
     #: Filament slot -> tray, as flattened AMS indices (ams_id*4 + tray_id) or 255
     #: for the external spool. Omit to let the printer keep its current mapping.
     ams_mapping: Optional[List[int]] = None
+    #: Object ids (slice_info ``identify_id`` values) to skip as soon as the job
+    #: starts printing. Applied server-side so it does not depend on the browser.
+    skip_object_ids: Optional[List[int]] = Field(None, max_length=64)
 
 
 class FileNode(BaseModel):

@@ -109,6 +109,11 @@ AUTH_COOKIE = "bfm_token"
 CALIBRATION_HOME_DELAY = 2.0
 #: How long to wait for a print to actually start before reporting failure.
 PRINT_START_VERIFY_DELAY = 4.0
+#: How long to wait for a just-started job to reach RUNNING before injecting a
+#: pre-armed object skip (override in tests).
+PRINT_SKIP_INJECT_TIMEOUT = 15.0
+#: Poll interval for that wait.
+PRINT_SKIP_POLL_INTERVAL = 0.5
 
 
 class ConnectionHub:
@@ -1114,6 +1119,49 @@ async def verify_started(printer_id: str, name: str) -> None:
     )
 
 
+async def inject_pre_skip(printer_id: str, ids: Optional[List[int]]) -> List[int]:
+    """Publish a pre-armed object skip as part of starting the print.
+
+    This is the deterministic path for a selection made *before* the print
+    starts: it rides along with the print request, so it cannot be lost to a
+    browser WebSocket, telemetry timing, or the ``idle -> prepare`` transition.
+    ``verify_started`` also accepts PREPARE/SLICING, but a skip only means
+    something once the machine is actually running the job, so wait (bounded) for
+    RUNNING first. The firmware queues object skips, so if the machine never gets
+    there we still publish once - and either way this must never turn a
+    successful print start into an error response.
+    """
+    wanted = [int(i) for i in (ids or [])]
+    if not wanted:
+        return []
+
+    deadline = time.monotonic() + PRINT_SKIP_INJECT_TIMEOUT
+    running = False
+    while True:
+        st = str((latest_reports.get(printer_id) or {}).get("gcode_state", "")).upper()
+        if st == "RUNNING":
+            running = True
+            break
+        # Nothing to wait for once the job has already ended again.
+        if st in ("FAILED", "FINISH"):
+            break
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(PRINT_SKIP_POLL_INTERVAL)
+    if not running:
+        logger.warning(
+            "%s did not report RUNNING within %.0fs - publishing the queued skip for %s anyway",
+            printer_id, PRINT_SKIP_INJECT_TIMEOUT, wanted,
+        )
+
+    try:
+        await dispatch(printer_id, "skip_objects", {"object_ids": wanted})
+    except Exception as exc:  # the print already started; never fail it here
+        logger.warning("Could not publish the pre-armed skip for %s: %s", printer_id, exc)
+        return []
+    return wanted
+
+
 @app.post("/api/dispatch-print", response_model=DispatchResponse)
 async def dispatch_print(cmd: PrintDispatchCommand):
     printers = read_printers()
@@ -1163,7 +1211,10 @@ async def dispatch_print(cmd: PrintDispatchCommand):
             detail="Printer node is offline over MQTTS - the print was not started.",
         )
     await verify_started(cmd.printer_id, cmd.filename)
-    return DispatchResponse(status="started", printer=printer.name, job=cmd.filename)
+    skipped = await inject_pre_skip(cmd.printer_id, cmd.skip_object_ids)
+    return DispatchResponse(
+        status="started", printer=printer.name, job=cmd.filename, skipped=skipped
+    )
 
 
 @app.get("/api/printers/{printer_id}/files/plan")
@@ -1772,7 +1823,8 @@ async def print_remote(printer_id: str, cmd: PrintRemoteCommand):
     # Give the printer a moment and report back whether it actually accepted it -
     # a 200 here only means the MQTT publish succeeded.
     await verify_started(printer_id, name)
-    return DispatchResponse(status="started", printer=printer.name, job=name)
+    skipped = await inject_pre_skip(printer_id, cmd.skip_object_ids)
+    return DispatchResponse(status="started", printer=printer.name, job=name, skipped=skipped)
 
 
 @app.post("/api/printers/{printer_id}/files/upload-dir")

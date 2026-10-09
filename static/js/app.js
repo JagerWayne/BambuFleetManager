@@ -159,9 +159,14 @@ async function sendCommand(printerId, command, params = {}, confirm = false) {
 
 // Skipped ids describe a single job. Clear them when the job changes or the
 // printer leaves the running/paused states, so a previous print's skips cannot
-// bleed into the next. A pre-armed skip is only dropped when it can no longer
-// apply (the job ended, or the job changed to a different file); a matching arm
-// is left for applyPreSkip to fire.
+// bleed into the next.
+//
+// A pre-armed skip is only dropped once it can no longer apply: the armed job
+// itself reached a terminal state, or the printer is actively running a
+// different, *named* job. An empty / 'None' subtask_name is "unknown", not a
+// different job - during idle -> prepare the printer's name is transiently
+// blank, and treating that as a change deleted the arm at the exact moment it
+// was supposed to fire.
 function clearSkipState(printer, t) {
   const job = t.subtask_name !== undefined ? (t.subtask_name || 'None') : printer.job;
   const changed = printer._skipJob !== undefined && printer._skipJob !== job;
@@ -170,9 +175,13 @@ function clearSkipState(printer, t) {
   const ended = st === 'finish' || st === 'failed' || st === 'idle';
   if (changed || ended) printer.skippedIds = [];
   const arm = state.preSkip[printer.id];
-  if (arm && (ended || changed) && baseName(arm.job) !== baseName(job)) {
-    delete state.preSkip[printer.id];
-  }
+  if (!arm) return;
+  const named = (n) => !!n && n !== 'None';
+  const armedJob = baseName(arm.job);
+  const currentJob = named(job) ? baseName(job) : null;
+  const armedEnded = named(job) && currentJob === armedJob && (st === 'finish' || st === 'failed');
+  const otherJob = st !== 'idle' && currentJob !== null && currentJob !== armedJob;
+  if (armedEnded || otherJob) delete state.preSkip[printer.id];
 }
 
 function applyTelemetry(printer, t) {
@@ -267,14 +276,18 @@ function applyTelemetry(printer, t) {
   applyPreSkip(printer);
 }
 
-// Pre-armed skips are applied exactly once, on the running/prepare transition.
-// The _preSkipSending flag is set before the await so the several telemetry
-// ticks a second cannot each fire a duplicate POST.
+// Pre-armed skips ride along with the print request (see startPrintFromDialog);
+// this is the FALLBACK for a print started outside the app - from the printer's
+// own screen, say - where no request carried the selection. It fires once the
+// job is actually running, exactly once, guarded against the several telemetry
+// ticks a second. It cannot fight the primary path: when the backend applied
+// the skip it echoes the ids back, the arm is deleted and nothing is left to
+// send here.
 async function applyPreSkip(printer) {
   const arm = state.preSkip[printer.id];
   if (!arm) return;
   const st = printer.status;
-  if (st !== 'running' && st !== 'prepare') {
+  if (st !== 'running') {
     // A stale arm never fires on a later, different job: anything still armed
     // when the job ends (finish/failed) was never applied, so drop it.
     if (st === 'finish' || st === 'failed') delete state.preSkip[printer.id];
@@ -1125,6 +1138,10 @@ async function confirmSkip() {
     state.preSkip[ctx.printerId] = { job, ids };
     toast(`Will skip ${ids.length} object${ids.length === 1 ? '' : 's'} when the print starts.`, 'ok');
     state.skipSelection = new Set();
+    // The print dialog (if it is open for this project) now shows the armed count.
+    if (state.print && state.print.plan && state.print.printerId === ctx.printerId) {
+      renderPrintDialog();
+    }
     scheduleRender();
     closeSkipModal();
     return;
@@ -2232,11 +2249,38 @@ async function loadFiles(printerId, path, force = false) {
   }
 }
 
+/* ------------------------------------------------------- pre-armed skips */
+
+// The armed ids for a printer, but only when the arm is for this exact project.
+// Anything else belongs to another file and must not ride along.
+function armedSkipIds(printerId, jobName) {
+  const arm = state.preSkip[printerId];
+  const want = baseName(jobName || '');
+  if (!arm || !want || baseName(arm.job) !== want) return [];
+  return Array.isArray(arm.ids) ? arm.ids.slice() : [];
+}
+
+// Clear the arm once the backend has applied it (echoed back as `skipped`). If it
+// could not be applied the arm stays, and applyPreSkip() remains the fallback.
+function consumePreSkip(printerId, jobName, applied) {
+  const arm = state.preSkip[printerId];
+  if (!arm) return;
+  if (baseName(arm.job) !== baseName(jobName || '')) return;
+  if (applied) delete state.preSkip[printerId];
+}
+
+function markSkipped(printerId, ids) {
+  const printer = printerById(printerId);
+  if (!printer || !ids || !ids.length) return;
+  printer.skippedIds = [...new Set([...(printer.skippedIds || []), ...ids])];
+}
+
 /* ------------------------------------------------------------ dispatch */
 
 async function dispatchToPrinter(printerId, filename) {
   const entry = cards.get(printerId);
   if (entry) entry.root.classList.add('opacity-60');
+  const skipIds = armedSkipIds(printerId, filename);
   try {
     const res = await api('/api/dispatch-print', {
       method: 'POST',
@@ -2244,10 +2288,16 @@ async function dispatchToPrinter(printerId, filename) {
       body: JSON.stringify({
         printer_id: printerId, filename, plate_index: 1,
         bed_levelling: true, flow_cali: true, vibration_cali: true,
-        timelapse: true, use_ams: true
+        timelapse: true, use_ams: true,
+        skip_object_ids: skipIds.length ? skipIds : null
       })
     });
-    toast(`${res.job} → ${res.printer}`);
+    const applied = Array.isArray(res.skipped) && res.skipped.length ? res.skipped : [];
+    consumePreSkip(printerId, filename, applied.length > 0 || skipIds.length === 0);
+    markSkipped(printerId, applied);
+    toast(`${res.job} → ${res.printer}`
+      + (applied.length ? ` (${applied.length} object${applied.length === 1 ? '' : 's'} skipped)` : ''));
+    scheduleRender();
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -2923,10 +2973,18 @@ function renderPrintDialog() {
   // info
   const info = (plan.plates || []).find((p) => p.index === plate) || {};
   const mins = Math.round((info.time_sec || 0) / 60);
+  // Say out loud that a selection armed before the start will be injected when
+  // the print starts - it is sent with this request, not after the fact.
+  const armed = armedSkipIds(state.print.printerId, plan.path);
+  const armedRow = armed.length
+    ? `<div class="flex justify-between gap-3"><span class="t-mut">Skipped on start</span>`
+      + `<span class="text-right">${armed.length} object${armed.length === 1 ? '' : 's'} `
+      + `will be skipped when this print starts</span></div>`
+    : '';
   $('print-info').innerHTML = `
     <div class="flex justify-between"><span class="t-mut">Plate</span><span>${plate}</span></div>
     <div class="flex justify-between"><span class="t-mut">Est. time</span><span>${mins ? mins + ' min' : '—'}</span></div>
-    <div class="flex justify-between"><span class="t-mut">Filament</span><span>${info.weight_g ? info.weight_g.toFixed(1) + ' g' : '—'}</span></div>`;
+    <div class="flex justify-between"><span class="t-mut">Filament</span><span>${info.weight_g ? info.weight_g.toFixed(1) + ' g' : '—'}</span></div>${armedRow}`;
 
   // filaments + mapping: one row per filament, each opening a colour-aware tray
   // picker modal. A native <select> cannot show the tray colours, which is
@@ -3043,6 +3101,9 @@ async function startPrintFromDialog() {
   const useAms = opt('use_ams', true);
   const info = (plan.plates || []).find((p) => p.index === plate) || {};
   const mapping = (info.filaments || []).map((f) => state.print.mapping[f.id] ?? -1);
+  // A selection armed before the print started is sent WITH the print request,
+  // so it is applied by the backend instead of racing the telemetry.
+  const skipIds = armedSkipIds(printerId, plan.path);
 
   $('print-start').disabled = true;
   try {
@@ -3058,11 +3119,17 @@ async function startPrintFromDialog() {
         flow_cali: opt('flow_cali', true),
         vibration_cali: opt('vibration_cali', true),
         timelapse: opt('timelapse', true),
+        skip_object_ids: skipIds.length ? skipIds : null,
       })
     });
+    const applied = Array.isArray(res.skipped) && res.skipped.length ? res.skipped : [];
+    consumePreSkip(printerId, plan.path, applied.length > 0 || skipIds.length === 0);
+    markSkipped(printerId, applied);
     state.printPath[printerId] = plan.path;
-    toast(`${res.job} → ${res.printer}`);
+    toast(`${res.job} → ${res.printer}`
+      + (applied.length ? ` (${applied.length} object${applied.length === 1 ? '' : 's'} skipped)` : ''));
     closePrintDialog();
+    scheduleRender();
   } catch (err) {
     toast(err.message, 'error');
   } finally {

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import pathlib
+import threading
 import time
 import zipfile
 
@@ -1301,6 +1302,110 @@ def test_print_remote_includes_ams_mapping(node, client, monkeypatch):
                       json={"path": "/benchy.3mf", "ams_mapping": [2, 255]})
     assert res.status_code == 200
     assert last_publish(client)["print"]["ams_mapping"] == [2, 255]
+
+
+# ------------------------------------------------- pre-armed object skips
+
+
+def print_commands(client):
+    """Every `print` payload published during the request, in order."""
+    return [s[2]["print"] for s in client.sent if s[0] == "publish" and "print" in s[2]]
+
+
+def test_print_remote_injects_pre_armed_skip(node, client, monkeypatch):
+    """A selection armed before the start is published by the backend itself."""
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    main_module.latest_reports[node] = {"gcode_state": "RUNNING"}
+    res = client.post(f"/api/printers/{node}/print-remote",
+                      json={"path": "/benchy.3mf", "skip_object_ids": [60, 112]})
+    assert res.status_code == 200
+    assert res.json()["skipped"] == [60, 112]
+    cmds = print_commands(client)
+    # the job is started first, then the skip is injected on top of it
+    assert [c["command"] for c in cmds[-2:]] == ["project_file", "skip_objects"]
+    assert cmds[-1]["obj_list"] == [60, 112]
+
+
+def test_print_remote_without_ids_sends_no_skip(node, client, monkeypatch):
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    main_module.latest_reports[node] = {"gcode_state": "RUNNING"}
+    res = client.post(f"/api/printers/{node}/print-remote",
+                      json={"path": "/benchy.3mf", "skip_object_ids": []})
+    assert res.status_code == 200
+    assert res.json()["skipped"] == []
+    assert "skip_objects" not in [c["command"] for c in print_commands(client)]
+
+    client.sent.clear()
+    res = client.post(f"/api/printers/{node}/print-remote", json={"path": "/benchy.3mf"})
+    assert res.status_code == 200
+    assert res.json()["skipped"] == []
+    assert "skip_objects" not in [c["command"] for c in print_commands(client)]
+
+
+def test_pre_skip_wait_is_bounded_when_never_running(node, client, monkeypatch):
+    """A printer that stays in PREPARE must not hang the print-start request."""
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    monkeypatch.setattr(main_module, "PRINT_SKIP_INJECT_TIMEOUT", 0.2)
+    monkeypatch.setattr(main_module, "PRINT_SKIP_POLL_INTERVAL", 0.05)
+    main_module.latest_reports[node] = {"gcode_state": "PREPARE"}  # never RUNNING
+
+    started = time.monotonic()
+    res = client.post(f"/api/printers/{node}/print-remote",
+                      json={"path": "/benchy.3mf", "skip_object_ids": [156]})
+    elapsed = time.monotonic() - started
+    assert res.status_code == 200          # a started print is never turned into an error
+    assert res.json()["skipped"] == [156]  # the firmware queues it, so it is still sent
+    assert elapsed < 5
+    assert print_commands(client)[-1]["obj_list"] == [156]
+
+
+def test_pre_skip_waits_for_running_before_publishing(node, client, monkeypatch):
+    """The skip is held back while the printer is only preparing the job."""
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    monkeypatch.setattr(main_module, "PRINT_SKIP_INJECT_TIMEOUT", 5.0)
+    monkeypatch.setattr(main_module, "PRINT_SKIP_POLL_INTERVAL", 0.05)
+    main_module.latest_reports[node] = {"gcode_state": "PREPARE"}
+
+    def go_running():
+        main_module.latest_reports[node] = {"gcode_state": "RUNNING"}
+
+    threading.Timer(0.3, go_running).start()
+    res = client.post(f"/api/printers/{node}/print-remote",
+                      json={"path": "/benchy.3mf", "skip_object_ids": [156]})
+    assert res.status_code == 200
+    assert res.json()["skipped"] == [156]
+
+
+def test_dispatch_print_injects_pre_armed_skip(client, monkeypatch):
+    client.post(
+        "/api/printers",
+        json={"id": "n1", "name": "n", "ip": "1.1.1.1", "sn": "SN1", "access_code": "12345678"},
+    )
+    client.post("/api/stage-upload", files={"file": ("benchy.3mf", b"PK\x03\x04")})
+    monkeypatch.setattr(main_module, "upload_3mf_file", lambda ip, code, path: True)
+    monkeypatch.setattr(main_module, "local_plate_indices", lambda path: [1])
+    main_module.latest_reports["n1"] = {"gcode_state": "RUNNING"}
+
+    res = client.post("/api/dispatch-print", json={
+        "printer_id": "n1", "filename": "benchy.3mf", "skip_object_ids": [7, 9],
+    })
+    assert res.status_code == 200
+    assert res.json()["skipped"] == [7, 9]
+    assert print_commands(client)[-1]["obj_list"] == [7, 9]
+
+
+def test_print_remote_rejects_bad_skip_ids(node, client, monkeypatch):
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    main_module.latest_reports[node] = {"gcode_state": "RUNNING"}
+    client.sent.clear()
+    assert client.post(f"/api/printers/{node}/print-remote",
+                       json={"path": "/benchy.3mf", "skip_object_ids": ["a"]}).status_code == 422
+    assert client.post(f"/api/printers/{node}/print-remote",
+                       json={"path": "/benchy.3mf", "skip_object_ids": [1.5]}).status_code == 422
+    assert client.post(f"/api/printers/{node}/print-remote",
+                       json={"path": "/benchy.3mf",
+                             "skip_object_ids": list(range(65))}).status_code == 422
+    assert not [s for s in client.sent if s[0] == "publish"]   # rejected before touching the printer
 
 
 # ---------------------------------------------------- filament writing
