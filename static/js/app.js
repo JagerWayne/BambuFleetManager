@@ -26,6 +26,9 @@ const state = {
   // pending skip selection + the printer/path/plate the skip modal is editing
   skipSelection: new Set(),
   skipCtx: null,
+  // Pre-armed skips: printerId -> { job, ids }. In-memory only, never
+  // persisted, and applied once the matching job starts printing.
+  preSkip: {},
   trayPicker: null,
   filament: null,
   filaments: [],
@@ -44,6 +47,13 @@ const escapeHtml = (v) => String(v == null ? '' : v)
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const num = (v, fallback = 0) => (typeof v === 'number' && isFinite(v) ? v : fallback);
+
+// The last path segment. We often hold a full SD path while the printer
+// reports a bare subtask_name, so job matching strips folders first.
+function baseName(p) {
+  const parts = String(p == null ? '' : p).split(/[\\/]/);
+  return parts[parts.length - 1] || '';
+}
 
 /* Speed profile levels, as the firmware numbers them (verified on an X1C). */
 const SPEED_LABELS = { 1: 'Silent', 2: 'Standard', 3: 'Sport', 4: 'Ludicrous' };
@@ -226,6 +236,37 @@ function applyTelemetry(printer, t) {
   // A FAILED state with no code and no HMS is a stale leftover, not an error.
   printer.activeError = Boolean(printer.printError) || Boolean((printer.hms || []).length);
   printer.seenAt = Date.now();
+
+  // An armed skip fires as soon as the matching job starts printing.
+  applyPreSkip(printer);
+}
+
+// Pre-armed skips are applied exactly once, on the running/prepare transition.
+// The _preSkipSending flag is set before the await so the several telemetry
+// ticks a second cannot each fire a duplicate POST.
+async function applyPreSkip(printer) {
+  const arm = state.preSkip[printer.id];
+  if (!arm) return;
+  const st = printer.status;
+  if (st !== 'running' && st !== 'prepare') {
+    // A stale arm never fires on a later, different job: anything still armed
+    // when the job ends (finish/failed) was never applied, so drop it.
+    if (st === 'finish' || st === 'failed') delete state.preSkip[printer.id];
+    return;
+  }
+  if (printer._preSkipSending) return;
+  if (baseName(arm.job) !== baseName(printer.job)) return;
+  const ids = Array.isArray(arm.ids) ? arm.ids : [];
+  if (!ids.length) { delete state.preSkip[printer.id]; return; }
+
+  printer._preSkipSending = true;
+  const ok = await post(`/api/printers/${printer.id}/skip-objects`, { object_ids: ids });
+  printer._preSkipSending = false;
+  if (!ok) return;  // leave the arm in place for a retry
+  printer.skippedIds = [...new Set([...(printer.skippedIds || []), ...ids])];
+  delete state.preSkip[printer.id];
+  toast(`Pre-armed skip sent for ${ids.length} object${ids.length === 1 ? '' : 's'}.`, 'ok');
+  scheduleRender();
 }
 
 function tone(status, online) {
@@ -744,6 +785,10 @@ function refreshLive(body, printer) {
     b.setAttribute('aria-pressed', String(current === b.dataset.value));
   });
 
+  // Reprint follows the reported job, which changes under telemetry.
+  const reprintBtn = body.querySelector('[data-live="reprint"]');
+  if (reprintBtn) reprintBtn.disabled = !printableJob(printer.job);
+
   // The skip list only needs rebuilding when the objects, the current object or
   // the queued skips actually change - telemetry arrives several times a second.
   const skipBox = body.querySelector('[data-live="skip-objects"]');
@@ -779,10 +824,13 @@ function objectSubtitle(obj) {
 
 function skipSignature(p) {
   const objects = Array.isArray(p.objects) ? p.objects : [];
+  const arm = state.preSkip[p.id];
+  const armed = arm && Array.isArray(arm.ids) ? arm.ids.join('.') : '';
   return [
     objects.map((o) => `${o.id}:${o.name}:${o.tool}`).join(','),
     p.objectIndex == null ? '' : p.objectIndex,
     (p.skippedIds || []).join('.'),
+    armed,
     p.status
   ].join('|');
 }
@@ -829,6 +877,8 @@ function skipObjectsHtml(p) {
   const printing = p.status === 'running' || p.status === 'paused';
   const cur = p.objectIndex;
   const skipped = Array.isArray(p.skippedIds) ? p.skippedIds.length : 0;
+  const arm = state.preSkip[p.id];
+  const armed = arm && Array.isArray(arm.ids) ? arm.ids.length : 0;
 
   if (!objects.length) {
     return `
@@ -848,12 +898,13 @@ function skipObjectsHtml(p) {
       </div>
 
       <div class="mt-2">
-        ${btn('Skip objects…', 'open-skip', { cls: 'w-full btn-primary', disabled: !printing })}
+        ${btn('Skip objects…', 'open-skip', { cls: 'w-full btn-primary' })}
       </div>
 
       <p class="font-mono text-[10px] t-mut">
         Choose the objects to drop from the plate; the printer keeps the rest.
         ${skipped ? `${skipped} already skipped.` : ''}
+        ${armed ? `${armed} armed.` : ''}
       </p>
     </div>`;
 }
@@ -908,12 +959,14 @@ function renderSkipModal() {
   const info = skipItemsFor(ctx, printer);
 
   $('skip-title').textContent = 'Skip objects';
-  $('skip-sub').textContent = `${printer.name || ctx.printerId} · ${running ? 'job active' : 'not printing'}`;
+  $('skip-sub').textContent = `${printer.name || ctx.printerId} · ${running
+    ? 'job active'
+    : 'not printing — selection will skip when the print starts'}`;
 
   const count = state.skipSelection.size;
   const confirmBtn = $('skip-confirm');
   confirmBtn.textContent = count ? `Skip selected (${count})` : 'Skip selected';
-  confirmBtn.disabled = !running || count === 0;
+  confirmBtn.disabled = count === 0;
 
   const box = $('skip-bed');
   if (info.kind === 'loading') {
@@ -925,7 +978,9 @@ function renderSkipModal() {
     return;
   }
 
-  const disabled = (id) => skipItemState(printer, id) === 'is-skipped' || !running;
+  // Only already-sent skips are locked; everything else is selectable, even
+  // while the printer is idle so a selection can be armed ahead of the job.
+  const disabled = (id) => skipItemState(printer, id) === 'is-skipped';
 
   if (info.kind === 'bed') {
     const bedW = info.bed[0] || 256;
@@ -971,8 +1026,13 @@ function openSkipModal(printerId, opts = {}) {
     || (state.printPath && state.printPath[printerId])
     || ('/' + (printer.job || ''));
   const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
-  state.skipCtx = { printerId, path, plate };
-  state.skipSelection = new Set();
+  const job = baseName(path) || printer.job;
+  state.skipCtx = { printerId, path, plate, job };
+  // Re-open with the already-armed set preloaded so it renders red (pending).
+  const arm = state.preSkip[printerId];
+  state.skipSelection = (arm && baseName(arm.job) === baseName(job))
+    ? new Set(arm.ids || [])
+    : new Set();
   $('modal-skip').classList.replace('hidden', 'flex');
   renderSkipModal();
 }
@@ -990,7 +1050,6 @@ function toggleSkipObject(id) {
   const printer = printerById(ctx.printerId);
   if (!printer) return;
   if ((printer.skippedIds || []).indexOf(id) >= 0) return;
-  if (printer.status !== 'running' && printer.status !== 'paused') return;
   if (state.skipSelection.has(id)) state.skipSelection.delete(id);
   else state.skipSelection.add(id);
   renderSkipModal();
@@ -1003,8 +1062,15 @@ async function confirmSkip() {
   if (!printer) return;
   const ids = [...state.skipSelection];
   if (!ids.length) return;
-  if (printer.status !== 'running' && printer.status !== 'paused') {
-    toast('The printer is not running a job', 'warn');
+  const running = printer.status === 'running' || printer.status === 'paused';
+  if (!running) {
+    // Arm the selection; it is applied once the matching job starts printing.
+    const job = ctx.job || baseName(ctx.path) || printer.job;
+    state.preSkip[ctx.printerId] = { job, ids };
+    toast(`Will skip ${ids.length} object${ids.length === 1 ? '' : 's'} when the print starts.`, 'ok');
+    state.skipSelection = new Set();
+    scheduleRender();
+    closeSkipModal();
     return;
   }
   const ok = await post(`/api/printers/${ctx.printerId}/skip-objects`, { object_ids: ids });
@@ -1048,6 +1114,12 @@ function motionConfirmed(el) {
   const panel = el.closest('[data-r="panel"]');
   const box = panel && panel.querySelector('[data-role="confirm-motion"]');
   return Boolean(box && box.checked);
+}
+
+// A job we can re-open in the print preview: a real file name, not the
+// printer's "None" placeholder and one of the printable extensions.
+function printableJob(job) {
+  return Boolean(job) && job !== 'None' && /\.(3mf|gcode)$/i.test(baseName(job));
 }
 
 function controlHtml(p) {
@@ -1142,6 +1214,7 @@ function controlHtml(p) {
           ${btn('Pause', 'pause', { cls: 'btn-warn' })}
           ${btn('Resume', 'resume', { cls: 'btn-primary' })}
           ${btn('Stop', 'stop', { cls: 'btn-danger' })}
+          ${btn('Reprint', 'reprint', { cls: 'btn-ghost', disabled: !printableJob(p.job), data: { live: 'reprint' } })}
           ${btn('Recover', 'retry', { cls: 'btn-ghost' })}
           ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' })}
         </div>
@@ -1711,6 +1784,13 @@ async function handleAction(printerId, el, entry) {
       await post(`/api/printers/${printerId}/stop`, {}); success('stop sent'); break;
     case 'retry':
       await post(`/api/printers/${printerId}/retry`, {}); success('recovery sent'); break;
+    case 'reprint': {
+      const printer = printerById(printerId);
+      if (!printer || !printableJob(printer.job)) { toast('Nothing to reprint', 'warn'); break; }
+      const path = (state.printPath && state.printPath[printerId]) || ('/' + printer.job);
+      await openPrintDialog(printerId, path);
+      break;
+    }
     case 'clear-error': {
       if (await post(`/api/printers/${printerId}/clear-error`, {})) {
         toast('Error cleared. If the printer still shows FAILED, dismiss it on its screen.', 'warn');
