@@ -118,4 +118,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
   (which embeds one) comes from an authenticated endpoint, and TLS verification is
   intentionally disabled for the printers' self-signed certs.
 - `docs/CAMERA.md` is the reference for the RTSP/Digest/RTP work — read it before touching
-  `backend/camera.py`.
+  `backend/camera.py`. Live MJPEG streams are registered per printer
+  (`start_mjpeg_stream` / `stop_mjpeg_stream`): a printer serves one RTSP client, so a new
+  viewer must replace the old ffmpeg, and the endpoint tears the process down in `finally`
+  because killing ffmpeg is what unblocks a stalled pipe read.

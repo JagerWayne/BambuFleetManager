@@ -2193,7 +2193,6 @@ function openSettings() {
     $('update-current').textContent = `v${($('app-version').textContent || '').trim()}`;
     $('update-result').classList.add('hidden');
     $('update-download').classList.add('hidden');
-    $('update-staged').classList.add('hidden');
     $('update-staged-actions').classList.add('hidden');
     $('update-install').disabled = false;
     $('update-install').textContent = 'Run installer';
@@ -2276,10 +2275,9 @@ async function downloadUpdate() {
   download.textContent = 'Downloading… (~45 MB)';
   try {
     const r = await api('/api/update/download', { method: 'POST' });
-    setUpdateResult(`Downloaded ${version}. Run the installer whenever you are ready.`, 'ok');
-    const staged = $('update-staged');
-    staged.textContent = `${r.installer} · ${formatBytes(r.size)}`;
-    staged.classList.remove('hidden');
+    // filename + size only: a full Windows path busts the narrow modal
+    const name = String(r.installer || '').split(/[\\/]/).pop() || 'installer';
+    setUpdateResult(`Downloaded ${name} (${formatBytes(r.size)}). Run it whenever you are ready.`, 'ok');
     $('update-save').setAttribute('download', `BambuFleetManagerSetup-${r.version}.exe`);
     $('update-install').dataset.version = r.version;
     $('update-staged-actions').classList.remove('hidden');

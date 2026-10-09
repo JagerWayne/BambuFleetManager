@@ -20,6 +20,7 @@ ALLOW_REMOVED = {
     "id=collapse-all": "fleet rail removed - one printer is shown at a time, so there is nothing to collapse",
     "for=fleet-filter": "filter moved into the printer bar, now labelled with aria-label",
     "type=file": "the staging file input moved into the Staging tab, which app.js builds",
+    "id=update-staged": "the long installer path overflowed the settings modal; the file name and size now go in the result line",
 }
 
 
