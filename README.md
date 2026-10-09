@@ -33,8 +33,10 @@ Browser ──REST/WS──► FastAPI ──MQTTS 8883──► printers
   and map each filament to an AMS tray or the external spool (auto-mapped by colour).
 - **AMS management.** Per-unit trays with real colour swatches, remaining bar, humidity,
   the loaded tray highlighted, and **edit** to set a tray's material / colour / remaining.
-- **SD-card browser.** Browse folders, upload into the current folder, download, delete,
-  and print a stored project.
+- **SD-card browser.** Browse folders, upload into the current folder, download, delete, and
+  print a stored project. Sort by name/date/size in either direction, filter to print files
+  (3MF) or video files (MP4), search the folder, and rename a `.3mf` in place. Folders are
+  open-only, the file being printed is highlighted, and rename/delete are blocked mid-job.
 - **Staging queue.** Drop a sliced project in the *Staging* tab, then drag it onto the card
   to start it on the selected printer.
 - **Manual temperatures, homing, jog (X/Y/Z), extruder** — all safety-gated.

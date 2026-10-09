@@ -41,6 +41,15 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
   in `localStorage` as `bfm-printer`), renders only that card, and fills the
   `<select id="printer-select">` in the printer bar. Cards for other ids are `destroy()`ed, so
   a stray second `[data-card-id]` in the DOM means the selection logic regressed.
+- The card's controls are **always shown** (`entry.tab` defaults to `'control'` and never goes
+  null); there is no collapse toggle. Node removal lives in the System tab behind a
+  three-number challenge (`removeChallengeHtml`). That gate is an anti-misclick guard, not a
+  security control - the delete endpoint is unauthenticated like the rest when no token is set.
+- The file browser's sort/filter live in a module-level `const fileView` (persisted as
+  `bfm-files-*`), so jsdom tests must drive them through the DOM (a bubbling `change`/`input`
+  event on the controls) rather than reaching for the object. Per-row actions are in a
+  `<details class="file-menu">`; `renderFiles`'s `sig` includes the view state, the printer
+  status and the printing file, so those changes re-render on the next telemetry tick.
 - Component CSS lives in **`@layer components`** in `assets/tailwind.src.css`. This is load
   bearing: unlayered CSS beats every Tailwind layer, so an unlayered `.chip { display: … }`
   silently overrides the `hidden` utility. Keep new component classes inside that layer.
