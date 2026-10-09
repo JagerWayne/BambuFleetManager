@@ -157,6 +157,24 @@ async function sendCommand(printerId, command, params = {}, confirm = false) {
 
 /* ------------------------------------------------------- telemetry model */
 
+// Skipped ids describe a single job. Clear them when the job changes or the
+// printer leaves the running/paused states, so a previous print's skips cannot
+// bleed into the next. A pre-armed skip is only dropped when it can no longer
+// apply (the job ended, or the job changed to a different file); a matching arm
+// is left for applyPreSkip to fire.
+function clearSkipState(printer, t) {
+  const job = t.subtask_name !== undefined ? (t.subtask_name || 'None') : printer.job;
+  const changed = printer._skipJob !== undefined && printer._skipJob !== job;
+  printer._skipJob = job;
+  const st = printer.status;
+  const ended = st === 'finish' || st === 'failed' || st === 'idle';
+  if (changed || ended) printer.skippedIds = [];
+  const arm = state.preSkip[printer.id];
+  if (arm && (ended || changed) && baseName(arm.job) !== baseName(job)) {
+    delete state.preSkip[printer.id];
+  }
+}
+
 function applyTelemetry(printer, t) {
   if (t.gcode_state) printer.status = String(t.gcode_state).toLowerCase();
   if (t.mc_percent !== undefined) printer.progress = num(t.mc_percent);
@@ -170,31 +188,39 @@ function applyTelemetry(printer, t) {
   if (t.total_layer_num !== undefined) printer.totalLayers = num(t.total_layer_num);
   if (t.mc_print_stage !== undefined) printer.stage = t.mc_print_stage;
 
-  // The object list and the object being printed. The printer's own skip
-  // screen is driven by job.stage[] plus job.cur_stage.idx; some firmware
-  // also sends the skippable ids in s_obj. Nothing here is guaranteed, so
-  // each shape is read defensively and anything missing simply stays unset.
+  // The live object list. On firmware that reports real per-object data,
+  // job.stage[] (with job.cur_stage.idx) carries it; the X1 firmware instead
+  // sends one generic stage record with no names, so only trust job.stage when
+  // it actually looks like an object list (more than one entry, or a named
+  // one). Otherwise leave printer.objects alone and fall back to the sliced
+  // plate geometry for the skip UI.
   const stages = (t.job && Array.isArray(t.job.stage)) ? t.job.stage : null;
-  if (stages) {
+  if (stages && (stages.length > 1
+      || stages.some((s) => String((s || {}).name || '').trim()))) {
     printer.objects = stages.map((s, i) => ({
       id: num((s || {}).idx, i),
       name: String((s || {}).name || '').trim(),
       tool: Array.isArray((s || {}).tool) ? s.tool.filter(Boolean).join(' / ') : '',
       estMin: num((s || {}).est_time, 0)
     }));
-  } else if (Array.isArray(t.s_obj) && t.s_obj.length) {
-    printer.objects = t.s_obj
-      .filter((v) => typeof v === 'number')
-      .map((id, i) => ({ id, name: '', tool: '', estMin: 0 }));
+  }
+
+  // s_obj is the list of ids the printer has ALREADY skipped, not the object
+  // list. Merge it into skippedIds so an applied skip stays locked.
+  if (Array.isArray(t.s_obj) && t.s_obj.length) {
+    const skipped = t.s_obj.filter((v) => typeof v === 'number');
+    if (skipped.length) {
+      printer.skippedIds = [...new Set([...(printer.skippedIds || []), ...skipped])];
+    }
   }
 
   const curStage = t.job && t.job.cur_stage ? t.job.cur_stage.idx : undefined;
   if (curStage !== undefined && curStage !== null) printer.objectIndex = num(curStage, 0);
   else if (t.mc_print_sub_stage !== undefined) printer.objectIndex = num(t.mc_print_sub_stage, 0);
-  // once the printer moves past a queued skip it stops mattering
-  if (Array.isArray(printer.skippedIds) && printer.objectIndex != null) {
-    printer.skippedIds = printer.skippedIds.filter((id) => id > printer.objectIndex);
-  }
+
+  // Skipped ids belong to one job; drop them when the job changes or ends so a
+  // previous print cannot leak into the next.
+  clearSkipState(printer, t);
   if (t.print_error !== undefined) printer.printError = t.print_error ? num(t.print_error) : 0;
   if (t.nozzle_diameter !== undefined) printer.nozzleDiameter = t.nozzle_diameter;
   if (t.nozzle_type) printer.nozzleType = t.nozzle_type;
@@ -824,10 +850,15 @@ function objectSubtitle(obj) {
 
 function skipSignature(p) {
   const objects = Array.isArray(p.objects) ? p.objects : [];
+  const geom = plateGeomFor(p, {});
+  const geomKey = geom && Array.isArray(geom.objects)
+    ? geom.objects.map((o) => `${o.id}:${o.name}`).join(',')
+    : '';
   const arm = state.preSkip[p.id];
   const armed = arm && Array.isArray(arm.ids) ? arm.ids.join('.') : '';
   return [
     objects.map((o) => `${o.id}:${o.name}:${o.tool}`).join(','),
+    geomKey,
     p.objectIndex == null ? '' : p.objectIndex,
     (p.skippedIds || []).join('.'),
     armed,
@@ -842,21 +873,31 @@ function plateFromJob(filename) {
   return match ? Number(match[1]) : 1;
 }
 
+// Cache key used by plateGeomFor so callers can tell "still loading" from
+// "the project has no plate map".
+function plateGeomKey(printer, opts = {}) {
+  const path = opts.path
+    || (state.printPath && state.printPath[printer.id])
+    || ('/' + (printer.job || ''));
+  const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
+  return `${path}|${plate}`;
+}
+
 // Fetch the sliced plate geometry once per (path, plate) so telemetry ticks do
 // not refetch it. Returns the cached data, or null while it is loading or when
 // the project has none (the caller then falls back to the live object list).
 function plateGeomFor(printer, opts = {}) {
   if (!printer) return null;
-  const path = opts.path
-    || (state.printPath && state.printPath[printer.id])
-    || ('/' + (printer.job || ''));
-  const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
-  const key = `${path}|${plate}`;
+  const key = plateGeomKey(printer, opts);
   if (Object.prototype.hasOwnProperty.call(state.plateGeom, key)) {
     return state.plateGeom[key];
   }
   if (state.plateGeomPending[key]) return null;
   state.plateGeomPending[key] = true;
+  const path = opts.path
+    || (state.printPath && state.printPath[printer.id])
+    || ('/' + (printer.job || ''));
+  const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
   api(`/api/printers/${printer.id}/files/objects?path=${encodeURIComponent(path)}&plate=${plate}`)
     .then((data) => {
       state.plateGeom[key] = (data && Array.isArray(data.objects) && data.objects.length)
@@ -871,16 +912,24 @@ function plateGeomFor(printer, opts = {}) {
 }
 
 // The Control tab summarises the object position and hands the choosing off to
-// the skip modal. Nothing here sends a skip on its own.
+// the skip modal. The count comes from the sliced plate geometry when the
+// project has one (the printer itself reports no per-object list on the X1);
+// the live object list is only a fallback. Nothing here sends a skip.
 function skipObjectsHtml(p) {
-  const objects = Array.isArray(p.objects) ? p.objects : [];
+  const geom = plateGeomFor(p, {});
+  const key = plateGeomKey(p, {});
+  const tried = Object.prototype.hasOwnProperty.call(state.plateGeom, key);
+  const geomCount = geom && Array.isArray(geom.objects) ? geom.objects.length : 0;
+  const live = Array.isArray(p.objects) ? p.objects : [];
+  const count = geomCount || live.length;
+  const loading = !count && !tried && p.job && p.job !== 'None';
   const printing = p.status === 'running' || p.status === 'paused';
   const cur = p.objectIndex;
   const skipped = Array.isArray(p.skippedIds) ? p.skippedIds.length : 0;
   const arm = state.preSkip[p.id];
   const armed = arm && Array.isArray(arm.ids) ? arm.ids.length : 0;
 
-  if (!objects.length) {
+  if (!count && !loading) {
     return `
       <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
         <p class="font-mono text-[10px] t-mut">
@@ -890,10 +939,14 @@ function skipObjectsHtml(p) {
       </div>`;
   }
 
+  const summary = loading
+    ? 'Object list reading…'
+    : `Object ${cur == null ? '-' : cur + 1} of ${count}`;
+
   return `
     <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
       <div class="flex items-center justify-between gap-2">
-        <span class="chip chip-ok">Object ${cur == null ? '-' : cur + 1} of ${objects.length}</span>
+        <span class="chip chip-ok">${summary}</span>
         <span class="font-mono text-[10px] t-mut">${printing ? 'job active' : 'start a job to skip'}</span>
       </div>
 
@@ -931,10 +984,13 @@ function skipItemsFor(ctx, printer) {
       bed: geom.bed || [256, 256],
       items: geom.objects.map((g, i) => {
         const l = live[i];
+        const geomName = (g.name || '').trim();
         return {
-          id: l ? l.id : g.id,
-          name: (l && l.name) || g.name || `Object ${i + 1}`,
-          sub: l ? objectSubtitle(l) : '',
+          // The geometry id is already the slice_info identify_id the skip
+          // command wants; never override it with the live (bbox) id.
+          id: g.id,
+          name: geomName || ((l && l.name) || `Object ${i + 1}`),
+          sub: geomName ? '' : (l ? objectSubtitle(l) : ''),
           bbox: g.bbox || [0, 0, 1, 1]
         };
       })

@@ -70,6 +70,22 @@ check('object count from job.stage', p.objects.length === 4, p.objects.length);
 check('object names kept', p.objects[1].name === 'Cable clip', p.objects[1].name);
 check('current object index', p.objectIndex === 2, p.objectIndex);
 
+/* --- X1 reality: a single generic stage is not a list; s_obj = skipped ids - */
+
+const q = Object.assign({}, base, { objects: [{ id: 1, name: 'stale' }], skippedIds: [] });
+window.applyTelemetry(q, {
+  gcode_state: 'RUNNING',
+  subtask_name: 'Cube_plate_1.gcode.3mf',
+  job: { cur_stage: { idx: 0 }, stage: [{ idx: 0, type: 2 }] },
+  s_obj: [60, 112]
+});
+check('a single unnamed job.stage is not an object list',
+  q.objects.length === 1 && q.objects[0].id === 1, JSON.stringify(q.objects));
+check('s_obj does not build the object list',
+  q.objects.length === 1, JSON.stringify(q.objects));
+check('s_obj populates skippedIds',
+  q.skippedIds.indexOf(60) >= 0 && q.skippedIds.indexOf(112) >= 0, JSON.stringify(q.skippedIds));
+
 /* --- Control tab: summary + modal entry, no direct skip ------------------- */
 
 const markup = window.controlHtml(p);

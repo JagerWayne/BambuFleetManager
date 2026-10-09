@@ -869,7 +869,13 @@ async def stage_upload(file: UploadFile = File(...)):
 
 
 def parse_slice_info(xml_text: str) -> List[dict]:
-    """Parse ``Metadata/slice_info.config`` into per-plate time/weight/filaments."""
+    """Parse ``Metadata/slice_info.config`` into per-plate metadata.
+
+    Besides time/weight/filaments this keeps each plate's ``<object>`` list.
+    Its ``identify_id`` is the id the ``print.skip_objects`` command expects
+    (the printer ignores the ``plate_N.json`` bbox ids), and the elements are
+    in the same slicer order as that plate's ``bbox_objects``.
+    """
     plates = []
     try:
         root = ET.fromstring(xml_text)
@@ -887,6 +893,17 @@ def parse_slice_info(xml_text: str) -> List[dict]:
                 "used_g": float(f.get("used_g") or 0),
                 "tray_info_idx": f.get("tray_info_idx") or "",
             })
+        objects = []
+        for o in plate.findall("object"):
+            try:
+                identify_id = int(o.get("identify_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            objects.append({
+                "id": identify_id,
+                "name": o.get("name") or "",
+                "skipped": (o.get("skipped") or "").strip().lower() in ("true", "1"),
+            })
         try:
             index = int(meta.get("index") or 0)
         except ValueError:
@@ -896,6 +913,7 @@ def parse_slice_info(xml_text: str) -> List[dict]:
             "time_sec": int(float(meta.get("prediction") or 0)),
             "weight_g": float(meta.get("weight") or 0),
             "filaments": filaments,
+            "objects": objects,
         })
     return sorted(plates, key=lambda p: p["index"])
 
@@ -943,6 +961,36 @@ def parse_plate_geometry(json_text: str) -> dict:
         except (TypeError, ValueError):
             continue
     return {"bed": bed, "bbox_all": bbox_all, "objects": objects}
+
+
+def merge_plate_object_ids(geometry: dict, slice_objects: List[dict]) -> List[dict]:
+    """Correlate plate geometry objects with slice_info identify_ids.
+
+    ``geometry["objects"]`` keeps the slicer order and the ``plate_N.json``
+    bbox id; ``slice_objects`` is the matching ``slice_info.config`` object list
+    (also slicer order, carrying the ``identify_id`` the skip command needs).
+    The two are correlated by index; a short/missing slice list falls back to
+    the bbox id so nothing regresses. Geometry ``bbox`` is preserved and the
+    slice name is preferred only when geometry has none.
+    """
+    merged = []
+    for i, obj in enumerate(geometry.get("objects") or []):
+        plate_id = obj.get("id")
+        identify_id = plate_id
+        name = obj.get("name") or ""
+        if i < len(slice_objects):
+            so = slice_objects[i]
+            if so.get("id"):
+                identify_id = so["id"]
+            if not name:
+                name = so.get("name") or name
+        merged.append({
+            "id": identify_id,
+            "plate_id": plate_id,
+            "name": name,
+            "bbox": obj.get("bbox"),
+        })
+    return merged
 
 
 def available_trays(printer_id: str) -> dict:
@@ -1181,10 +1229,15 @@ async def print_objects(
 ):
     """Per-object plate geometry for the top-down "skip object" bed diagram.
 
-    Reads ``Metadata/plate_<n>.json`` (and ``slice_info.config`` to default the
-    plate index when the caller does not name one). Objects are returned in the
-    slicer order the printer reports its live list in, so the dashboard can
-    correlate the two by index.
+    Reads ``Metadata/plate_<n>.json`` for the bed layout and
+    ``Metadata/slice_info.config`` for the ids the skip command needs.
+
+    The returned object ``id`` is the ``slice_info.config`` ``<object
+    identify_id>`` (what ``print.skip_objects`` expects) - *not* the
+    ``plate_<n>.json`` ``bbox_objects[].id``. The two lists are emitted in the
+    same slicer order, so they are correlated by index; ``plate_id`` echoes the
+    original bbox id and geometry keeps its ``bbox``. Objects without a
+    matching slice entry keep their bbox id, so nothing regresses.
     """
     printer = get_printer(printer_id)
     target = normalize_remote_path(path)
@@ -1208,9 +1261,11 @@ async def print_objects(
             plate = detected[0] if detected else 1
 
     entry = f"Metadata/plate_{plate}.json"
+    slice_entry = "Metadata/slice_info.config"
     try:
         entries = await run_blocking(
-            read_remote_zip_entries, printer.ip, printer.access_code, target, [entry]
+            read_remote_zip_entries, printer.ip, printer.access_code, target,
+            [entry, slice_entry],
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Could not read the project: {exc}")
@@ -1221,6 +1276,16 @@ async def print_objects(
             detail=f"No {entry} in the project - it is not a sliced 3MF with a plate map.",
         )
     geometry = parse_plate_geometry(raw.decode("utf-8", "replace"))
+
+    # Correlate the bbox objects with slice_info identify_ids by slicer index.
+    slice_objects = []
+    slice_raw = entries.get(slice_entry)
+    if slice_raw:
+        for pl in parse_slice_info(slice_raw.decode("utf-8", "replace")):
+            if pl.get("index") == plate:
+                slice_objects = pl.get("objects") or []
+                break
+    geometry["objects"] = merge_plate_object_ids(geometry, slice_objects)
     return {"path": target, "plate": plate, **geometry}
 
 

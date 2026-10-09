@@ -3,7 +3,9 @@
 import asyncio
 import json
 import os
+import pathlib
 import time
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1207,6 +1209,8 @@ SLICE_XML = """<?xml version="1.0" encoding="UTF-8"?>
   <metadata key="index" value="4"/>
   <metadata key="prediction" value="5256"/>
   <metadata key="weight" value="56.17"/>
+  <object identify_id="60" name="Cube" skipped="false"/>
+  <object identify_id="112" name="Cube" skipped="true"/>
   <filament id="1" tray_info_idx="GFA01" type="PLA" color="#000000" used_m="17.69" used_g="56.17"/>
 </plate></config>"""
 
@@ -1220,6 +1224,9 @@ def test_parse_slice_info():
     assert plate["weight_g"] == 56.17
     assert plate["filaments"][0]["type"] == "PLA"
     assert plate["filaments"][0]["color"] == "000000"
+    assert [o["id"] for o in plate["objects"]] == [60, 112]
+    assert plate["objects"][0]["name"] == "Cube"
+    assert plate["objects"][1]["skipped"] is True
 
 
 def test_plan_endpoint(node, client, monkeypatch):
@@ -1239,6 +1246,28 @@ def test_plan_endpoint(node, client, monkeypatch):
     assert body["trays"][0]["color"] == "FFFFFF"
     assert body["external"]["index"] == 255
     assert body["external"]["color"] == "00AE42"
+
+
+FIXTURE_3MF = pathlib.Path(__file__).parent / "fixtures" / "Cube_PLA_13m23s.gcode.3mf"
+
+
+def test_print_objects_returns_slice_info_ids(node, client, monkeypatch):
+    """The objects endpoint hands back slice_info identify_ids, not bbox ids."""
+    contents = {}
+    with zipfile.ZipFile(FIXTURE_3MF) as archive:
+        contents["Metadata/plate_1.json"] = archive.read("Metadata/plate_1.json")
+        contents["Metadata/slice_info.config"] = archive.read("Metadata/slice_info.config")
+    monkeypatch.setattr(
+        main_module, "read_remote_zip_entries",
+        lambda ip, code, path, names: {n: contents[n] for n in names if n in contents},
+    )
+    body = client.get(
+        f"/api/printers/{node}/files/objects",
+        params={"path": "/Cube_PLA_13m23s.gcode.3mf", "plate": 1},
+    ).json()
+    assert body["plate"] == 1
+    assert [o["id"] for o in body["objects"]] == [60, 112, 134, 156, 178]
+    assert [o["plate_id"] for o in body["objects"]] == [92, 191, 192, 193, 196]
 
 
 def test_plate_endpoint_serves_png(node, client, monkeypatch):
