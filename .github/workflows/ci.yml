@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -17,23 +17,53 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install flake8
+        run: python -m pip install "flake8>=7.0.0"
+
+      - name: Lint (blocking)
+        run: |
+          # stop the build on syntax errors or undefined names
+          flake8 backend tray --count --select=E9,F63,F7,F82 --show-source --statistics
+          # full style pass is blocking too; max-complexity tracks the current
+          # worst offender and is ratcheted down over time
+          flake8 backend tray --count --max-complexity=12 --max-line-length=120 --statistics
+
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install dependencies (pinned)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Lint with flake8
-        run: |
-          # stop the build if there are Python syntax errors or undefined names
-          flake8 backend --count --select=E9,F63,F7,F82 --show-source --statistics
-          # exit-zero treats all errors as warnings
-          flake8 backend --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+          pip install -r requirements.lock -r requirements-dev.txt
 
       - name: Execute Backend Tests
-        run: |
-          pytest tests/ -v
+        run: pytest tests/ -v
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: UI logic tests (jsdom)
         run: |
@@ -41,5 +71,4 @@ jobs:
           npm run test:ui
 
       - name: Verify the offline CSS bundle is present
-        run: |
-          test -s static/css/tailwind.min.css
+        run: python -c "import os, sys; s = os.path.getsize('static/css/tailwind.min.css'); sys.exit(0 if s > 0 else 1)"

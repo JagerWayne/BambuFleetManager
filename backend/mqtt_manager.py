@@ -53,6 +53,7 @@ class BambuMqttClient:
         # A unique client id per process: two servers sharing "bfm_<sn>" would
         # kick each other off the printer's broker on every reconnect.
         self.client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"bfm_{sn}_{uuid.uuid4().hex[:6]}",
             protocol=mqtt.MQTTv311,
         )
@@ -86,8 +87,10 @@ class BambuMqttClient:
 
     # -------------------------------------------------------------- callbacks
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        # paho 2.x hands us a ReasonCode object; ``is_failure`` is its stable
+        # success/failure test across MQTT 3.1.1 and 5.
+        if not reason_code.is_failure:
             self.connected = True
             self.last_error = None
             client.subscribe(f"device/{self.sn}/report")
@@ -97,12 +100,12 @@ class BambuMqttClient:
             logger.info("MQTT connected to %s (%s)", self.sn, self.ip)
         else:
             self.connected = False
-            self.last_error = f"connection rejected with rc={rc}"
-            logger.error("MQTT connection rejected for %s, rc=%s", self.sn, rc)
+            self.last_error = f"connection rejected with rc={reason_code}"
+            logger.error("MQTT connection rejected for %s, rc=%s", self.sn, reason_code)
 
-    def _on_disconnect(self, client, userdata, rc):
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None):
         self.connected = False
-        logger.warning("MQTT disconnected from %s, rc=%s", self.sn, rc)
+        logger.warning("MQTT disconnected from %s, rc=%s", self.sn, reason_code)
 
     def _on_message(self, client, userdata, msg):
         try:
