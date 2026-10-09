@@ -52,6 +52,12 @@
         </span>
         <span id="motion-badge" class="chip chip-warn hidden"
               title="Machine moves are unlocked — no per-action confirmation">moves unlocked</span>
+        <span class="fleet-pips" aria-label="Fleet status">
+          <span class="pip pip-ok"><span id="v-online" class="pip-value">0</span><span class="pip-label">on</span></span>
+          <span class="pip pip-accent"><span id="v-printing" class="pip-value">0</span><span class="pip-label">print</span></span>
+          <span class="pip pip-info"><span id="v-idle" class="pip-value">0</span><span class="pip-label">idle</span></span>
+          <span class="pip pip-danger"><span id="v-error" class="pip-value">0</span><span class="pip-label">err</span></span>
+        </span>
       </div>
 
       <div class="app-actions">
@@ -75,75 +81,24 @@
     </div>
   </header>
 
-  <!-- ================================================ body: rail + main -->
+  <!-- ============================================ printer selector bar -->
+  <div class="printer-bar">
+    <div class="printer-bar-inner">
+      <label class="printer-bar-label" for="printer-select">Printer</label>
+      <div class="printer-bar-select">
+        <span id="printer-dot" class="h-2 w-2 shrink-0 rounded-full bg-slate-500" aria-hidden="true"></span>
+        <select id="printer-select" aria-label="Choose a printer"></select>
+      </div>
+      <input id="fleet-filter" type="search" class="field printer-bar-filter hidden"
+             placeholder="Filter by name, IP or serial…" autocomplete="off" aria-label="Filter printers">
+      <p class="printer-bar-note">Printers are reached directly on the LAN. Nothing leaves this machine.</p>
+    </div>
+  </div>
+
   <div class="app-body">
-
-    <!-- ------------------------------------------ fleet rail / sidebar -->
-    <aside class="app-rail" aria-label="Fleet overview">
-      <section class="rail-card">
-        <h2 class="rail-title">Fleet status</h2>
-        <div class="vitals">
-          <div class="vital">
-            <span class="vital-label">Online</span>
-            <span id="v-online" class="vital-value t-ok">0</span>
-          </div>
-          <div class="vital">
-            <span class="vital-label">Printing</span>
-            <span id="v-printing" class="vital-value t-accent">0</span>
-          </div>
-          <div class="vital">
-            <span class="vital-label">Idle</span>
-            <span id="v-idle" class="vital-value t-info">0</span>
-          </div>
-          <div class="vital">
-            <span class="vital-label">Errors</span>
-            <span id="v-error" class="vital-value t-danger">0</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="rail-card">
-        <label class="rail-title" for="fleet-filter">Filter nodes</label>
-        <input id="fleet-filter" type="search" placeholder="Name, IP or serial…"
-               autocomplete="off" class="field">
-        <button id="collapse-all" class="btn btn-ghost w-full">Collapse all</button>
-      </section>
-
-      <p class="rail-note">
-        Printers are reached directly on the LAN.<br>
-        Nothing leaves this machine.
-      </p>
-    </aside>
-
     <!-- ------------------------------------------------ main canvas -->
     <main class="app-main">
-
-      <!-- =========================================== staging queue -->
-      <section class="card staging" aria-label="Staging queue">
-        <div class="section-head">
-          <div class="section-head-text">
-            <h2 class="section-title">Staging queue</h2>
-            <p class="section-sub">Drop a sliced project here, then drag it onto a printer card to start it.</p>
-          </div>
-          <span id="staged-count" class="chip border line surface-2 t-mut">0 files</span>
-        </div>
-
-        <div class="staging-grid">
-          <div id="drop-zone" class="drop-zone">
-            <input type="file" id="file-input" class="hidden" accept=".3mf,.gcode" multiple>
-            <div class="drop-inner">
-              <svg class="mx-auto mb-1 h-6 w-6 t-mut" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-              </svg>
-              <span class="drop-title">Drop or click to stage</span>
-              <span class="drop-sub">.3mf / .gcode</span>
-            </div>
-          </div>
-          <div id="staged-container" class="staged-list"></div>
-        </div>
-      </section>
-
-      <!-- =========================================== fleet grid -->
+      <!-- the selected printer's card is the only one mounted -->
       <div id="fleet-grid" class="fleet-grid"></div>
     </main>
   </div>

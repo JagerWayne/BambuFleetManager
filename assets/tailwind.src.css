@@ -109,19 +109,8 @@
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --tap-min: 44px;
   --shell-max: 1440px;
-  /* the fleet rail is narrow enough for a tablet, full width on a desktop */
-  --rail-w: 208px;
-  --rail-w-lg: 264px;
   --topbar-h: 61px;
   --bottombar-h: 68px;
-}
-
-@media (min-width: 1024px) {
-  :root,
-  :root[data-theme="dark"],
-  :root[data-theme="light"] {
-    --rail-w: var(--rail-w-lg);
-  }
 }
 
 :root[data-theme="light"] {
@@ -396,7 +385,135 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   .app-shell { padding-bottom: calc(var(--bottombar-h) + env(safe-area-inset-bottom)); }
 }
 
-/* --- body: rail + canvas ---------------------------------------------- */
+/* --- printer selector bar ---------------------------------------------
+   One printer is mounted at a time; this chooses which. It sits directly
+   under the top bar and sticks, so it is always reachable. */
+
+.printer-bar {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 30;
+  background: var(--header);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+
+.printer-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+}
+
+.printer-bar-label {
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mut);
+}
+
+.printer-bar-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 30rem;
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.printer-bar-select:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* the native control is kept for accessibility and behaviour, restyled */
+#printer-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  padding-right: 1.4rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  appearance: none;
+  cursor: pointer;
+}
+#printer-select:focus { outline: none; }
+#printer-select option { background: var(--surface); color: var(--text-body); }
+
+.printer-bar-select::after {
+  content: "▾";
+  position: absolute;
+  right: var(--space-sm);
+  pointer-events: none;
+  color: var(--text-mut);
+  font-size: var(--fs-xs);
+}
+
+.printer-bar-filter {
+  flex: 1 1 12rem;
+  max-width: 20rem;
+  min-height: 40px;
+}
+
+.printer-bar-note {
+  flex: 0 1 auto;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+@media (max-width: 767.98px) {
+  .printer-bar-note { display: none; }
+  .printer-bar-filter { display: none; }
+}
+
+/* --- compact fleet counters in the top bar ----------------------------- */
+
+.fleet-pips {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.pip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  line-height: 1.5;
+}
+.pip-value { color: var(--text-strong); }
+.pip-label { color: var(--text-mut); font-weight: 600; }
+.pip-ok .pip-value { color: var(--ok); }
+.pip-accent .pip-value { color: var(--accent); }
+.pip-info .pip-value { color: var(--info); }
+.pip-danger .pip-value { color: var(--danger); }
+
+@media (max-width: 639.98px) {
+  .pip-label { display: none; }
+}
+
+/* --- body: single column, one printer ---------------------------------- */
 
 .app-body {
   flex: 1 1 auto;
@@ -415,97 +532,8 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   min-width: 0;
 }
 
-@media (min-width: 768px) {
-  .app-body {
-    grid-template-columns: var(--rail-w) minmax(0, 1fr);
-    gap: var(--space-lg);
-    align-items: start;
-    padding: var(--space-lg);
-  }
-}
-
-/* --- fleet rail ------------------------------------------------------- */
-
-.app-rail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  min-width: 0;
-}
-
-@media (min-width: 768px) {
-  .app-rail {
-    position: sticky;
-    top: calc(var(--topbar-h) + var(--space-md));
-    align-self: start;
-    max-height: calc(100dvh - var(--topbar-h) - var(--space-lg) * 2);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-}
-
-.rail-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-sm);
-  box-shadow: var(--shadow-sm);
-}
-
-.rail-title {
-  display: block;
-  margin-bottom: var(--space-xs);
-  font-size: var(--fs-2xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-mut);
-}
-
-.rail-note {
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  line-height: var(--lh-xs);
-  color: var(--text-dim);
-  padding-inline: var(--space-2xs);
-}
-
-.vitals {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-2xs);
-}
-
-.vital {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  padding: var(--space-2xs) var(--space-2xs);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--line-soft);
-}
-
-.vital-label {
-  font-size: 9px;
-  line-height: var(--lh-2xs);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-mut);
-}
-
-.vital-value {
-  font-family: var(--font-mono);
-  font-size: var(--fs-md);
-  line-height: var(--lh-md);
-  font-weight: 700;
-}
-
-/* in the narrow rail the four stats pair up instead of squeezing */
-@media (min-width: 768px) {
-  .vitals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 1024px) {
+  .app-body { padding: var(--space-lg); }
 }
 
 /* --- footer ----------------------------------------------------------- */
@@ -575,8 +603,6 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   border-radius: var(--radius-md);
   color: var(--text-body);
 }
-
-.staging { padding: var(--space-md); }
 
 /* --- staging queue ---------------------------------------------------- */
 
@@ -794,18 +820,19 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   color: var(--accent);
 }
 
-/* on a phone all six tabs must fit without the strip scrolling sideways */
-@media (max-width: 479.98px) {
-  .tabbar { overflow-x: visible; }
+/* on a phone the tabs wrap onto a second row rather than scrolling sideways */
+@media (max-width: 639.98px) {
+  .tabbar {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
 
   .tab {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     min-width: 0;
-    padding: 0.45rem 0.2rem;
+    padding: 0.45rem 0.3rem;
     text-align: center;
     font-size: 10px;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 }
 

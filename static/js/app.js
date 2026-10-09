@@ -14,6 +14,7 @@ const state = {
   socket: null,
   filter: '',
   allowMotion: false,
+  selectedId: null,
   speedModalPrinter: null,
   cameraEnabled: true,
   print: { printerId: null, path: null, plan: null, plate: 1, mapping: {} },
@@ -75,10 +76,6 @@ function formatDate(iso) {
 }
 
 function printerById(id) { return state.fleet.find((p) => p.id === id); }
-
-const isLightOn = (p) => (p.lights && p.lights.chamber_light
-  ? p.lights.chamber_light === 'on'
-  : Boolean(p.light));
 
 function isOnline(p) { return p.seenAt && Date.now() - p.seenAt < 30000; }
 
@@ -308,6 +305,68 @@ function scheduleRender() {
   requestAnimationFrame(() => { renderQueued = false; renderFleet(); });
 }
 
+/* ------------------------------------------------------- printer selection */
+
+// One printer is mounted at a time. The dropdown picks which one; the choice is
+// remembered so a reload (or a phone coming back to life) lands on the same node.
+function selectedPrinter() {
+  const found = state.fleet.find((p) => p.id === state.selectedId);
+  if (found) return found;
+  return state.fleet[0] || null;
+}
+
+function selectPrinter(id, remember = true) {
+  if (!id || state.selectedId === id) { renderFleet(); return; }
+  state.selectedId = id;
+  if (remember) {
+    try { localStorage.setItem('bfm-printer', id); } catch (_) { /* ignore */ }
+  }
+  // the previous card's camera and observer go with it
+  cards.forEach((entry, key) => {
+    if (key !== id) { entry.destroy(); entry.root.remove(); cards.delete(key); }
+  });
+  renderFleet();
+}
+
+function restoreSelection() {
+  let saved = null;
+  try { saved = localStorage.getItem('bfm-printer'); } catch (_) { /* ignore */ }
+  if (saved) state.selectedId = saved;
+}
+
+/* Fill the dropdown from the fleet. Each option carries the printer's live
+   status so the list itself reads at a glance. */
+function renderPrinterSelect(list, selectedId) {
+  const select = $('printer-select');
+  if (!select) return;
+  const dot = $('printer-dot');
+
+  const options = list.map((p) => {
+    const online = isOnline(p);
+    const mark = online
+      ? (p.status === 'running' ? '● printing'
+        : p.status === 'failed' || p.printError ? '● error'
+          : p.status === 'idle' ? '● idle' : `● ${p.status}`)
+      : '● offline';
+    return `<option value="${escapeHtml(p.id)}"${p.id === selectedId ? ' selected' : ''}>`
+      + `${escapeHtml(p.name)} — ${mark}</option>`;
+  }).join('');
+
+  const sig = options;
+  if (select.dataset.sig !== sig) {
+    select.dataset.sig = sig;
+    select.innerHTML = options || '<option value="">No printers registered</option>';
+  }
+  if (select.value !== selectedId) select.value = selectedId || '';
+
+  const current = list.find((p) => p.id === selectedId);
+  if (dot) {
+    const t = tone(current ? current.status : '', Boolean(current && isOnline(current)));
+    dot.className = `h-2 w-2 shrink-0 rounded-full ${current ? t.dot.split(' ')[0] : 'bg-slate-500'}`;
+    dot.classList.add(...(current ? t.dot.split(' ').slice(1) : []));
+  }
+}
+
 function renderFleet() {
   const grid = $('fleet-grid');
   const needle = state.filter.toLowerCase();
@@ -320,30 +379,42 @@ function renderFleet() {
   $('v-idle').textContent = state.fleet.filter((p) => p.status === 'idle').length;
   $('v-error').textContent = state.fleet.filter((p) => p.status === 'failed' || p.printError).length;
 
+  renderPrinterSelect(visible, state.selectedId);
+
+  // only bother with a filter box once the fleet is big enough to need one
+  const filter = $('fleet-filter');
+  if (filter) filter.classList.toggle('hidden', state.fleet.length <= 8);
+
   if (!visible.length) {
-    cards.forEach((entry) => entry.root.remove());
+    cards.forEach((entry) => { entry.destroy(); entry.root.remove(); });
     cards.clear();
     grid.innerHTML = `<div class="card col-span-full p-12 text-center">
       <p class="text-sm font-bold t-body">${state.fleet.length ? 'No node matches that filter' : 'No printer nodes yet'}</p>
-      <p class="mt-1 text-xs t-mut">${state.fleet.length ? 'Clear the search box to see everything.' : 'Register a node with its LAN IP, serial number and access code.'}</p>
+      <p class="mt-1 text-xs t-mut">${state.fleet.length ? 'Clear the filter to see every node.' : 'Register a node with its LAN IP, serial number and access code.'}</p>
+      <button class="btn btn-primary mt-4" data-empty-add>Register a node</button>
     </div>`;
+    const add = grid.querySelector('[data-empty-add]');
+    if (add) add.addEventListener('click', () => openModal());
     return;
   }
-  const empty = grid.querySelector(':scope > .col-span-full');
-  if (empty) empty.remove();
 
-  const keep = new Set(visible.map((p) => p.id));
+  // keep the selection valid as the fleet changes, *before* drawing the dropdown
+  // so the control never renders blank on the first pass
+  const selected = visible.find((p) => p.id === state.selectedId) || visible[0];
+  if (selected.id !== state.selectedId) {
+    state.selectedId = selected.id;
+    try { localStorage.setItem('bfm-printer', selected.id); } catch (_) { /* ignore */ }
+  }
+  renderPrinterSelect(visible, selected.id);
+
   cards.forEach((entry, id) => {
-    if (!keep.has(id)) { entry.destroy(); entry.root.remove(); cards.delete(id); }
+    if (id !== selected.id) { entry.destroy(); entry.root.remove(); cards.delete(id); }
   });
 
-  visible.forEach((printer, index) => {
-    let entry = cards.get(printer.id);
-    if (!entry) { entry = createCard(printer); cards.set(printer.id, entry); }
-    updateCard(printer, entry);
-    const sibling = grid.children[index];
-    if (sibling !== entry.root) grid.insertBefore(entry.root, sibling || null);
-  });
+  let entry = cards.get(selected.id);
+  if (!entry) { entry = createCard(selected); cards.set(selected.id, entry); }
+  updateCard(selected, entry);
+  if (grid.firstChild !== entry.root) grid.replaceChildren(entry.root);
 }
 
 /* --------------------------------------------------------------- card DOM */
@@ -366,8 +437,6 @@ function createCard(printer) {
         <div class="mt-0.5 truncate font-mono text-[10px] t-mut" data-r="meta"></div>
       </div>
       <div class="ml-auto flex shrink-0 items-center gap-1.5">
-        <button class="icon-btn" data-act="light" title="Toggle chamber light">💡</button>
-        <button class="icon-btn" data-act="edit" title="Edit name / IP / access code">✎</button>
         <button class="icon-btn" data-act="panel" title="Show / hide controls">▾</button>
         <button class="icon-btn" data-act="menu" title="Remove node">⋯</button>
       </div>
@@ -391,7 +460,6 @@ function createCard(printer) {
         </div>
 
         <div class="flex shrink-0 items-center gap-1">
-          <button class="icon-btn" data-action="cam-restart" title="Restart stream">⟳</button>
           <button class="icon-btn" data-action="cam-stop" title="Stop stream">■</button>
           <button class="icon-btn" data-action="cam-snapshot" title="Save snapshot">◉</button>
           <button class="icon-btn" data-action="cam-fullscreen" title="Fullscreen">⛶</button>
@@ -432,8 +500,6 @@ function createCard(printer) {
             <span data-r="stage"></span><span data-r="remaining"></span>
           </span>
         </button>
-
-        <div class="grid shrink-0 grid-cols-3 gap-1.5" data-r="quick"></div>
 
         <div class="hidden shrink-0 space-y-0.5 pt-1 font-mono text-[10px]" data-r="alerts"></div>
 
@@ -484,17 +550,6 @@ function createCard(printer) {
     if (b) selectTab(b.dataset.tab);
   });
 
-  refs.quick.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-cmd]');
-    if (b) quickControl(printer.id, b.dataset.cmd);
-  });
-
-  root.querySelector('[data-act="light"]').addEventListener('click', (e) => {
-    e.stopPropagation(); toggleLight(printer.id);
-  });
-  root.querySelector('[data-act="edit"]').addEventListener('click', (e) => {
-    e.stopPropagation(); openModal(printerById(printer.id));
-  });
   root.querySelector('[data-act="panel"]').addEventListener('click', (e) => {
     e.stopPropagation();
     entry.tab = entry.tab ? null : (entry.lastTab || 'control');
@@ -581,16 +636,6 @@ function updateCard(printer, entry) {
   refs.stage.textContent = (printer.layer && printer.totalLayers) ? `layer ${printer.layer}/${printer.totalLayers}` : '';
   refs.remaining.textContent = printing ? `~${formatDuration(printer.remainingSec)} left` : '';
 
-  const quick = printing
-    ? `<button class="btn btn-warn" data-cmd="pause">Pause</button>
-       <button class="btn btn-danger" data-cmd="stop">Stop</button>
-       <button class="btn btn-ghost" data-cmd="retry">Recover</button>`
-    : `<button class="btn" data-cmd="resume">Resume</button>
-       <button class="btn btn-danger" data-cmd="stop">Stop</button>
-       <button class="btn btn-ghost" data-cmd="retry">Recover</button>`;
-  if (refs.quick.dataset.sig !== quick) { refs.quick.innerHTML = quick; refs.quick.dataset.sig = quick; }
-
-  entry.root.querySelector('[data-act="light"]').textContent = isLightOn(printer) ? '💡' : '🌑';
   entry.root.querySelector('[data-act="panel"]').textContent = entry.tab ? '▴' : '▾';
 
   if (entry.camRefs) {
@@ -633,7 +678,8 @@ const TABS = [
   ['temperature', 'Temp'],
   ['files', 'Files'],
   ['ams', 'AMS'],
-  ['system', 'System']
+  ['system', 'System'],
+  ['staging', 'Staging']
 ];
 
 function renderPanel(printer, entry, force = false) {
@@ -647,12 +693,18 @@ function renderPanel(printer, entry, force = false) {
     if (body.dataset.built !== 'none') {
       body.dataset.built = 'none';
       body.innerHTML = `<div class="grid h-full place-items-center px-6 py-4 text-center font-mono text-[11px] t-dim">
-        Pick a tab above for controls, temperatures, SD card, AMS or system.
+        Pick a tab above for controls, temperatures, SD card, AMS, system or staging.
       </div>`;
     }
     return;
   }
 
+  if (entry.tab === 'staging') {
+    body.dataset.built = 'staging';
+    body.innerHTML = stagingHtml();
+    wireStaging(body);
+    return renderStaged();
+  }
   if (entry.tab === 'files') { body.dataset.built = 'files'; return renderFiles(printer, body); }
   if (entry.tab === 'ams') { body.dataset.built = 'ams'; return renderAms(printer, body, force); }
 
@@ -1497,10 +1549,6 @@ async function handleAction(printerId, el, entry) {
       if (!window.confirm('Reboot the printer? The MQTT link will drop and reconnect.')) return;
       await post(`/api/printers/${printerId}/reboot`, { module: 'esp32' }); success('reboot sent'); break;
     case 'cam-start': startCamera(printerById(printerId), entry); break;
-    case 'cam-restart':
-      stopCamera(entry);
-      setTimeout(() => startCamera(printerById(printerId), entry), 200);
-      break;
     case 'cam-stop': stopCamera(entry); toast('camera stopped'); break;
     case 'cam-fullscreen': cameraFullscreen(entry, true); break;
     case 'cam-normal': cameraFullscreen(entry, false); break;
@@ -1555,8 +1603,7 @@ function systemHtml(p) {
         <div class="flex flex-wrap gap-1.5">
           <button class="btn btn-ghost" data-action="edit-node">Edit name / IP / code</button>
           <button class="btn btn-ghost" data-action="printer_info">Firmware query</button>
-          <button class="btn btn-ghost" data-action="refresh">Full state dump</button>
-          <button class="btn btn-danger" data-action="reboot">Reboot printer</button>
+              <button class="btn btn-danger" data-action="reboot">Reboot printer</button>
         </div>
       </div>
       <div>
@@ -1634,33 +1681,85 @@ async function dispatchToPrinter(printerId, filename) {
 
 /* ------------------------------------------------------------- quick bits */
 
-async function quickControl(id, cmd) {
-  if (cmd === 'retry') return void (await post(`/api/printers/${id}/retry`, {}));
-  if (cmd === 'stop' && !window.confirm('Stop the current print? This aborts the job.')) return;
-  await post(`/api/printers/${id}/${cmd}`, {});
-}
-
 async function setProfile(id, level) {
   const ok = await post(`/api/printers/${id}/speed`, { speed_level: level });
   if (ok) { const p = printerById(id); if (p) p.speedLevel = level; scheduleRender(); }
 }
 
-async function toggleLight(id) {
-  const printer = printerById(id);
-  if (!printer) return;
-  const next = !isLightOn(printer);
-  const ok = await post(`/api/printers/${id}/light`, { state: next });
-  if (ok) {
-    printer.light = next;
-    printer.lights = Object.assign({}, printer.lights || {}, { chamber_light: next ? 'on' : 'off' });
-    scheduleRender();
-  }
+/* ------------------------------------------------------- staging + drop */
+
+// The staging queue lives inside the selected printer's Staging tab. The markup
+// is built here rather than shipped in index.html because the panel is rebuilt
+// per tab, so the listeners are re-attached each time it is rendered.
+function stagingHtml() {
+  const current = selectedPrinter();
+  const target = current && current.name ? ` (${escapeHtml(current.name)})` : '';
+  const recipient = current ? ` to this printer${target}` : '';
+  return `
+    <div class="space-y-3">
+      <div class="section-head">
+        <div class="section-head-text">
+          <h2 class="section-title">Staging queue</h2>
+          <p class="section-sub">Drop a sliced project here, then drag it onto the card to start it.</p>
+        </div>
+        <span id="staged-count" class="chip border line surface-2 t-mut">0 files</span>
+      </div>
+
+      <div class="staging-grid">
+        <div id="drop-zone" class="drop-zone">
+          <input type="file" id="file-input" class="hidden" accept=".3mf,.gcode" multiple>
+          <div class="drop-inner">
+            <svg class="mx-auto mb-1 h-6 w-6 t-mut" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 16a4 4 0 01-.88-7.9A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            <span class="drop-title">Drop or click to stage</span>
+            <span class="drop-sub">.3mf / .gcode</span>
+          </div>
+        </div>
+        <div id="staged-container" class="staged-list"></div>
+      </div>
+
+      <p class="font-mono text-[10px] t-mut">
+        Staged files stay on this machine. Drag one onto the card to send it${recipient},
+        or open a file from the Files tab.
+      </p>
+    </div>`;
 }
 
-/* ------------------------------------------------------- staging + drop */
+function wireStaging(body) {
+  const drop = body.querySelector('#drop-zone');
+  const input = body.querySelector('#file-input');
+  const list = body.querySelector('#staged-container');
+  if (!drop || !input || !list) return;
+
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-target-hover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag-target-hover'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('drag-target-hover');
+    if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+  });
+  input.addEventListener('change', (e) => {
+    if (e.target.files.length) uploadFiles(e.target.files);
+    e.target.value = '';
+  });
+  list.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-remove]');
+    if (btn) { e.preventDefault(); removeStaged(btn.dataset.remove); }
+  });
+  list.addEventListener('dragstart', (e) => {
+    const item = e.target.closest('[data-file]');
+    if (!item) return;
+    state.dragFile = item.dataset.file;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', state.dragFile);
+  });
+}
 
 function renderStaged() {
   const box = $('staged-container');
+  if (!box) return;  // the Staging tab is not open
   $('staged-count').textContent = `${state.staged.length} file${state.staged.length === 1 ? '' : 's'}`;
   if (!state.staged.length) {
     box.innerHTML = '<div class="grid h-full place-items-center font-mono text-[11px] t-dim">Nothing staged yet</div>';
@@ -2316,19 +2415,7 @@ async function startPrintFromDialog() {
 /* ---------------------------------------------------------------- wiring */
 
 function wireStatic() {
-  const drop = $('drop-zone');
-  drop.addEventListener('click', () => $('file-input').click());
-  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-target-hover'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('drag-target-hover'));
-  drop.addEventListener('drop', (e) => {
-    e.preventDefault(); drop.classList.remove('drag-target-hover');
-    if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
-  });
-  $('file-input').addEventListener('change', (e) => {
-    if (e.target.files.length) uploadFiles(e.target.files);
-    e.target.value = '';
-  });
-
+  $('printer-select').addEventListener('change', (e) => selectPrinter(e.target.value));
   $('fleet-filter').addEventListener('input', (e) => { state.filter = e.target.value.trim(); renderFleet(); });
   $('add-printer').addEventListener('click', () => openModal());
   $('open-settings').addEventListener('click', openSettings);
@@ -2356,26 +2443,6 @@ function wireStatic() {
   $('settings-form').addEventListener('submit', saveSettings);
   $('modal-cancel').addEventListener('click', closeModal);
   $('printer-form').addEventListener('submit', savePrinter);
-  $('collapse-all').addEventListener('click', () => {
-    const anyOpen = [...cards.values()].some((e) => e.tab);
-    cards.forEach((entry) => {
-      entry.tab = anyOpen ? null : (entry.lastTab || 'control');
-      renderPanel(printerById(entry.root.dataset.cardId), entry, true);
-    });
-    $('collapse-all').textContent = anyOpen ? 'Expand' : 'Collapse';
-  });
-
-  $('staged-container').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-remove]');
-    if (btn) { e.preventDefault(); removeStaged(btn.dataset.remove); }
-  });
-  $('staged-container').addEventListener('dragstart', (e) => {
-    const item = e.target.closest('[data-file]');
-    if (!item) return;
-    state.dragFile = item.dataset.file;
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', state.dragFile);
-  });
 
   // temperature sliders keep their number inputs in sync (delegated)
   document.addEventListener('input', (e) => {
@@ -2421,6 +2488,7 @@ function wireStatic() {
 
 window.addEventListener('DOMContentLoaded', () => {
   wireStatic();
+  restoreSelection();
   fetch('/VERSION').then((r) => (r.ok ? r.text() : null))
     .then((v) => { if (v) $('app-version').textContent = v.trim(); })
     .catch(() => {});
