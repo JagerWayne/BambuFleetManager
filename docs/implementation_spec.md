@@ -1,3 +1,8 @@
+﻿<!-- HISTORICAL DOCUMENT
+Original implementation spec, kept for reference only.
+It predates the shipped product and has drifted - README.md and backend/main.py are the source of truth.
+-->
+
 # Architecture & Implementation Specification: Bambu Fleet Manager
 
 ## 1. Project Overview & Objective
@@ -7,22 +12,22 @@
 ### Target Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Local Host Server                               │
-│                                                                        │
-│  ┌───────────────────────┐             ┌────────────────────────────┐  │
-│  │ Single-Page Web UI    │◄──WebSockets│ FastAPI / Python 3.10+     │  │
-│  │ (HTML5/Tailwind/JS)   │───REST API─►│ Async Engine               │  │
-│  └───────────────────────┘             └──────┬──────────────┬──────┘  │
-└───────────────────────────────────────────────┼──────────────┼─────────┘
-                                                │ MQTTS (8883) │ FTPS (990)
-                         ┌──────────────────────┴──────────────┴──────┐
-                         ▼                                            ▼
-           ┌───────────────────────────┐                ┌───────────────────────────┐
-           │ Bambu Printer Node 01     │                │ Bambu Printer Node 02     │
-           │ IP: 192.168.1.151         │                │ IP: 192.168.1.152         │
-           │ Serial: 00M00A...         │                │ Serial: 00M00B...         │
-           └───────────────────────────┘                └───────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                        Local Host Server                               â”‚
+â”‚                                                                        â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”             â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
+â”‚  â”‚ Single-Page Web UI    â”‚â—„â”€â”€WebSocketsâ”‚ FastAPI / Python 3.10+     â”‚  â”‚
+â”‚  â”‚ (HTML5/Tailwind/JS)   â”‚â”€â”€â”€REST APIâ”€â–ºâ”‚ Async Engine               â”‚  â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜             â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜  â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                â”‚ MQTTS (8883) â”‚ FTPS (990)
+                         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”
+                         â–¼                                            â–¼
+           â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”                â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+           â”‚ Bambu Printer Node 01     â”‚                â”‚ Bambu Printer Node 02     â”‚
+           â”‚ IP: 192.168.1.151         â”‚                â”‚ IP: 192.168.1.152         â”‚
+           â”‚ Serial: 00M00A...         â”‚                â”‚ Serial: 00M00B...         â”‚
+           â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ---
@@ -156,35 +161,35 @@ jobs:
 
 ```
 bambu-fleet-manager/
-├── .github/
-│   └── workflows/
-│       └── ci.yml              # CI automation workflow
-├── .gitignore                  # Git ignore rules
-├── .venv/                      # Python virtual environment (ignored in git)
-├── config/
-│   └── printers.json.example   # Checked-in template config
-├── static/
-│   ├── css/
-│   │   └── tailwind.min.css    # Bundled CSS for offline setups
-│   └── js/
-│       └── app.js              # Frontend UI orchestration & WebSocket listener
-├── templates/
-│   └── index.html              # Single-page dashboard interface
-├── tests/
-│   ├── __init__.py
-│   ├── test_models.py          # Data contract verification tests
-│   └── test_mqtt_parser.py     # Telemetry parsing tests
-├── uploads/
-│   └── .gitkeep                # Keeps uploads folder tracked
-├── backend/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI application, REST endpoints, WS hub
-│   ├── mqtt_manager.py         # Multi-client MQTTS connection and message pump
-│   ├── ftp_client.py           # Implicit TLS FTPS file transfer module
-│   └── models.py               # Pydantic schemas and models
-├── requirements.txt            # Locked Python dependencies
-├── VERSION                     # Plaintext semantic version string (e.g., 1.0.0)
-└── README.md                   # Project documentation
+â”œâ”€â”€ .github/
+â”‚   â””â”€â”€ workflows/
+â”‚       â””â”€â”€ ci.yml              # CI automation workflow
+â”œâ”€â”€ .gitignore                  # Git ignore rules
+â”œâ”€â”€ .venv/                      # Python virtual environment (ignored in git)
+â”œâ”€â”€ config/
+â”‚   â””â”€â”€ printers.json.example   # Checked-in template config
+â”œâ”€â”€ static/
+â”‚   â”œâ”€â”€ css/
+â”‚   â”‚   â””â”€â”€ tailwind.min.css    # Bundled CSS for offline setups
+â”‚   â””â”€â”€ js/
+â”‚       â””â”€â”€ app.js              # Frontend UI orchestration & WebSocket listener
+â”œâ”€â”€ templates/
+â”‚   â””â”€â”€ index.html              # Single-page dashboard interface
+â”œâ”€â”€ tests/
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”œâ”€â”€ test_models.py          # Data contract verification tests
+â”‚   â””â”€â”€ test_mqtt_parser.py     # Telemetry parsing tests
+â”œâ”€â”€ uploads/
+â”‚   â””â”€â”€ .gitkeep                # Keeps uploads folder tracked
+â”œâ”€â”€ backend/
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”œâ”€â”€ main.py                 # FastAPI application, REST endpoints, WS hub
+â”‚   â”œâ”€â”€ mqtt_manager.py         # Multi-client MQTTS connection and message pump
+â”‚   â”œâ”€â”€ ftp_client.py           # Implicit TLS FTPS file transfer module
+â”‚   â””â”€â”€ models.py               # Pydantic schemas and models
+â”œâ”€â”€ requirements.txt            # Locked Python dependencies
+â”œâ”€â”€ VERSION                     # Plaintext semantic version string (e.g., 1.0.0)
+â””â”€â”€ README.md                   # Project documentation
 ```
 
 ---
@@ -689,7 +694,7 @@ async def websocket_endpoint(websocket: WebSocket):
         </div>
         <div>
           <h1 class="font-bold text-lg text-white tracking-tight">BAMBU <span class="text-bambu font-extrabold">FLEET MANAGER</span></h1>
-          <p class="text-xs text-slate-400 font-mono">Local Network Server · MQTTS 8883 · FTPS 990</p>
+          <p class="text-xs text-slate-400 font-mono">Local Network Server Â· MQTTS 8883 Â· FTPS 990</p>
         </div>
       </div>
 
@@ -860,21 +865,21 @@ function renderFleet() {
                 <h3 class="font-bold text-white text-base">${p.name}</h3>
                 <span class="text-[10px] font-mono px-2 py-0.5 rounded uppercase ${isPrinting ? 'bg-emerald-950 text-emerald-400' : 'bg-carbon-800 text-slate-400'}">${p.status}</span>
               </div>
-              <div class="text-[11px] font-mono text-slate-400">${p.ip} · ${p.sn}</div>
+              <div class="text-[11px] font-mono text-slate-400">${p.ip} Â· ${p.sn}</div>
             </div>
             <button onclick="toggleLight('${p.id}', ${!p.light})" class="p-1.5 rounded-lg bg-carbon-800 border border-carbon-700 text-slate-400 hover:text-white">
-              💡
+              ðŸ’¡
             </button>
           </div>
 
           <div class="grid grid-cols-2 gap-2 my-3 text-center font-mono">
             <div class="bg-carbon-850 p-2 rounded-lg">
               <span class="text-[9px] text-slate-400 block">NOZZLE</span>
-              <span class="text-xs font-bold ${p.nozzleTemp > 45 ? 'text-emerald-400' : 'text-slate-300'}">${p.nozzleTemp}/${p.nozzleTarget}°C</span>
+              <span class="text-xs font-bold ${p.nozzleTemp > 45 ? 'text-emerald-400' : 'text-slate-300'}">${p.nozzleTemp}/${p.nozzleTarget}Â°C</span>
             </div>
             <div class="bg-carbon-850 p-2 rounded-lg">
               <span class="text-[9px] text-slate-400 block">BED</span>
-              <span class="text-xs font-bold ${p.bedTemp > 40 ? 'text-amber-400' : 'text-slate-300'}">${p.bedTemp}/${p.bedTarget}°C</span>
+              <span class="text-xs font-bold ${p.bedTemp > 40 ? 'text-amber-400' : 'text-slate-300'}">${p.bedTemp}/${p.bedTarget}Â°C</span>
             </div>
           </div>
 
@@ -939,7 +944,7 @@ function renderStaged() {
   container.innerHTML = stagedFiles.map((fn, index) => `
     <div draggable="true" ondragstart="handleJobDragStart(event, '${fn}')" class="bg-carbon-850 p-2.5 rounded-xl border border-carbon-700 cursor-grab active:cursor-grabbing flex items-center justify-between text-xs">
       <span class="truncate font-mono text-white">${fn}</span>
-      <span class="text-[10px] text-bambu font-bold">DRAG ➔</span>
+      <span class="text-[10px] text-bambu font-bold">DRAG âž”</span>
     </div>
   `).join('');
 }

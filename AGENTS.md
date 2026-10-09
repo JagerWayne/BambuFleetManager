@@ -14,7 +14,8 @@ npm install --no-audit --no-fund
 npm run test:ui                                   :: jsdom UI logic tests
 npm run build:css                                 :: rebuild static/css/tailwind.min.css
 .venv\Scripts\python -m flake8 backend tray --count --select=E9,F63,F7,F82 --show-source --statistics
-.venv\Scripts\python -m flake8 backend tray --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+.venv\Scripts\python -m flake8 backend tray --count --max-complexity=12 --max-line-length=120 --statistics
+uv pip compile --python-version 3.11 requirements.txt -o requirements.lock   :: after editing requirements.txt
 run.bat --dev --reload                            :: serve (creates .venv, pip installs)
 .venv\Scripts\python -m tray.bambu_tray --selftest
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
@@ -22,15 +23,25 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
 
 - There is **no** `pyproject.toml` / `setup.cfg` / `.flake8` / `pytest.ini`. Bare `flake8`
   and `pytest` use defaults, which is *not* what CI runs — pass the flags above.
-- CI (`.github/workflows/ci.yml`, Python 3.11) order is: lint → `pytest tests/ -v` →
-  `npm run test:ui` → assert `static/css/tailwind.min.css` is non-empty. All four must pass.
+- CI (`.github/workflows/ci.yml`) is two jobs: `lint` (flake8, both passes **blocking**;
+  max-complexity is ratcheted at the current worst offender, currently 12) then `test`
+  (matrix: Python 3.11 + 3.13 on ubuntu, 3.13 on windows) running `pytest tests/ -v` →
+  `npm run test:ui` → assert `static/css/tailwind.min.css` is non-empty.
+- `requirements.lock` (uv-compiled, pinned for Python 3.11) is what CI and
+  `packaging/build.ps1` install; regenerate it whenever `requirements.txt` changes.
+  Runtime is paho-mqtt **2.x** (`CallbackAPIVersion.VERSION2` callbacks in
+  `mqtt_manager.py`).
 - `README.md`'s API table is partial and drifts; the `@app.*` decorators in
   `backend/main.py` are the source of truth (also served at `/docs`).
 
 ## Frontend: no bundler, vendored Tailwind
 
-- `static/js/app.js` (~2500 lines) and `templates/index.html` are served **raw**. There is
+- `static/js/app.js` (~3300 lines) and `templates/index.html` are served **raw**. There is
   no npm build for the app itself, no framework, no ES modules. Edit them directly.
+  Pure helpers (`escapeHtml`, `baseName`, `formatDuration`, `formatBytes`, `formatDate`,
+  `speedLabel`, `printableJob`) live in `static/js/lib/util.js`, loaded by a plain
+  `<script>` tag **before** app.js; they use `var` (not `const`) so jsdom's `window.eval`
+  exposes them.
 - `app.js` must stay a **non-strict, top-level script** (no IIFE, no `"use strict"`, no
   imports): `tests/js/dom_*_test.js` does `window.eval(appJs)` and then calls top-level
   functions as globals (`window.initTheme()`, `window.controlHtml()`). Wrapping it breaks the
@@ -66,14 +77,25 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
 
 ## Backend layout
 
-- `backend/main.py` (~1600 lines) is the whole app: config load/save, REST routes, the
-  `ConnectionHub` WebSocket fan-out, auth middleware, upload staging, the update flow.
+- `backend/main.py` is the **composition root and the shared core**: config load/save, the
+  auth + security-header middleware, the `ConnectionHub` WebSocket fan-out, `dispatch()` /
+  `guard_command()`, state re-exports and page routes (`/`, `/login`, `/VERSION`, `/health`,
+  `/api/diagnostics`, `/ws`).
+- The REST surface lives in `backend/routers/` (`system`, `update`, `printers`, `files`,
+  `camera`) and is attached by `_install_routers()` at the very bottom of `main.py`.
+  Routers reach shared helpers as **`core.<name>`** (`from backend import main as core`) so
+  config paths, `mqtt_manager` and test monkeypatches on `backend.main` are still observed -
+  never import those by value.
 - Protocol modules are separate and independently testable: `mqtt_manager.py` (MQTTS +
   per-printer client, `FleetMqttManager`), `ftp_client.py` (implicit FTPS + 3mf/zip
   parsing), `camera.py` (ffmpeg MJPEG/snapshot + pure-Python RTSP), `updater.py`.
 - `backend/commands.py` is the **command registry**: `COMMANDS` maps name → builder,
   and `risk_class()` classifies each as `safe | job | thermal | motion | home`.
-  `backend/telemetry.py` parses the MQTT `print` report.
+  `backend/telemetry.py` parses the MQTT `print` report and types it (`TelemetryReport`);
+  a retyped/renamed field is logged as drift but the tick is still delivered raw.
+- `backend/state.py` owns the shared per-printer dicts (`latest_reports`, `homed_state`,
+  `last_acks`) behind a re-entrant lock; `main.py` re-exports them, so seeding/clearing
+  them in tests still works.
 - `backend/paths.py` splits `RESOURCE_DIR` (read-only: `templates/`, `static/`, `VERSION`;
   `sys._MEIPASS` when frozen) from `DATA_DIR` (writable: `config/`, `uploads/`; repo root
   in dev, `%LOCALAPPDATA%\BambuFleetManager` when frozen, `BFM_DATA_DIR` overrides).
@@ -99,8 +121,8 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
 
 ## Testing quirks
 
-- No `conftest.py`. The `client` / `node` fixtures live inside `tests/test_api.py`, so
-  other test modules can't reuse them without moving them to a conftest first.
+- The `client` / `node` fixtures live in `tests/conftest.py` (lifted verbatim from
+  `test_api.py`); any test module can request them.
 - The `client` fixture (tmp_path + monkeypatch) isolates the machine-local state:
   `CONFIG_PATH`, `SETTINGS_PATH`, `STATE_PATH`, `UPLOAD_DIR`, `mqtt_manager=None`,
   clears `homed_state` / `latest_reports`, and sets `CALIBRATION_HOME_DELAY` /
@@ -108,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File packaging\build.ps1 [-Release]
   `require_manager` **must** stay monkeypatched to the `FakeManager` that records
   `("publish", printer_id, payload)` tuples in `client.sent` — that list is how tests
   assert what was actually sent.
-- Tests are sync (`TestClient`); `pytest-asyncio` is installed but unused.
+- Tests are sync (`TestClient`); no pytest-asyncio (removed — it was installed but unused).
 
 ## Release
 
