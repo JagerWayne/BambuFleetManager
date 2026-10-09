@@ -1203,11 +1203,11 @@ function controlHtml(p) {
     .map((l) => choice('speed', l, SPEED_LABELS[l], `${SPEED_PERCENT[l]}%`, '', (p.speedLevel || 0) === l))
     .join('');
 
-  const lightRow = (label, node, modes, liveKey) => `
-    <div class="flex items-center justify-between gap-2">
+  const lightCard = (label, node, modes, liveKey) => `
+    <div class="light-card">
       <div class="min-w-0">
-        <div class="text-[11px] font-bold t-body">${label}</div>
-        <div class="font-mono text-[10px] t-mut">reported:
+        <div class="light-card-title">${label}</div>
+        <div class="light-card-state">reported:
           <span data-live="${liveKey}" class="t-body">${
             escapeHtml((p.lights && p.lights[node]) || 'unknown')}</span>
         </div>
@@ -1219,13 +1219,14 @@ function controlHtml(p) {
     </div>`;
 
   const lightSection = `
-    ${lightRow('Chamber light', 'chamber_light', [
-      { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }, { value: 'flashing', label: 'Flash' }
-    ], 'light-chamber')}
-    <div class="h-px surface-3"></div>
-    ${lightRow('Work light', 'work_light', [
-      { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }
-    ], 'light-work')}`;
+    <div class="light-grid">
+      ${lightCard('Chamber light', 'chamber_light', [
+        { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }, { value: 'flashing', label: 'Flash' }
+      ], 'light-chamber')}
+      ${lightCard('Work light', 'work_light', [
+        { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }
+      ], 'light-work')}
+    </div>`;
 
   const skipSection = skipObjectsHtml(p);
 
@@ -1283,13 +1284,19 @@ function controlHtml(p) {
   return `
     <div class="grid gap-3 xl:grid-cols-2">
       ${section('Job control', `
-        <div class="flex flex-wrap gap-1.5">
-          ${btn('Pause', 'pause', { cls: 'btn-warn' })}
-          ${btn('Resume', 'resume', { cls: 'btn-primary' })}
-          ${btn('Stop', 'stop', { cls: 'btn-danger' })}
-          ${btn('Reprint', 'reprint', { cls: 'btn-ghost', disabled: !printableJob(p.job), data: { live: 'reprint' } })}
-          ${btn('Recover', 'retry', { cls: 'btn-ghost' })}
-          ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' })}
+        <div class="job-toolbar">
+          <div class="job-group job-group-primary">
+            ${btn('Pause', 'pause', { cls: 'btn-warn' })}
+            ${btn('Resume', 'resume', { cls: 'btn-primary' })}
+            ${btn('Stop', 'stop', { cls: 'btn-danger' })}
+          </div>
+          <div class="job-group job-group-reprint">
+            ${btn('Reprint', 'reprint', { cls: 'btn-ghost', disabled: !printableJob(p.job), data: { live: 'reprint' } })}
+          </div>
+          <div class="job-group job-group-recovery">
+            ${btn('Recover', 'retry', { cls: 'btn-ghost' })}
+            ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' })}
+          </div>
         </div>
         <p class="font-mono text-[10px] t-mut">State: <span data-live="status" class="t-body">${escapeHtml(p.status || 'unknown')}</span></p>
         ${p.status === 'failed' ? '<p class="font-mono text-[10px] t-warn">The last job failed. Press <b>Clear error</b>, then dismiss the message on the printer screen — a printer in FAILED refuses new jobs.</p>' : ''}`)}
@@ -1309,16 +1316,13 @@ function controlHtml(p) {
 
 function axisRow(label, axis, step, feed) {
   return `
-    <div class="flex items-center justify-between gap-3">
-      <span class="w-8 font-mono text-base font-bold t-body">${label}</span>
-      <div class="flex gap-1.5">
-        <button class="btn" data-action="jog" data-axis="${axis}" data-dir="-1" data-feed="${feed}">
-          − ${step} mm
-        </button>
-        <button class="btn" data-action="jog" data-axis="${axis}" data-dir="1" data-feed="${feed}">
-          + ${step} mm
-        </button>
-      </div>
+    <div class="jog-row${axis === 'z' ? ' is-z' : ''}">
+      <span class="jog-badge" aria-hidden="true">${label}</span>
+      <button class="btn jog-btn" data-action="jog" data-axis="${axis}" data-dir="-1" data-feed="${feed}"
+        aria-label="${label} minus ${step} mm">−</button>
+      <span class="jog-step">${step} mm${axis === 'z' ? ' · slow' : ''}</span>
+      <button class="btn jog-btn" data-action="jog" data-axis="${axis}" data-dir="1" data-feed="${feed}"
+        aria-label="${label} plus ${step} mm">+</button>
     </div>`;
 }
 
@@ -1348,7 +1352,7 @@ function jogHtml(p, entry) {
         <p class="font-mono text-[10px] t-mut">Each press moves one step (${step} mm).</p>`)}
 
       ${section('Move axes', `
-        <div class="space-y-2">
+        <div class="jog-grid">
           ${axisRow('X', 'x', step, 3000)}
           ${axisRow('Y', 'y', step, 3000)}
           ${axisRow('Z', 'z', step, 600)}
@@ -3016,13 +3020,17 @@ function renderPrintDialog() {
       </div>`;
   }).join('') : '<p class="font-mono text-[10px] t-mut">No filament information in this project.</p>';
 
-  // options
+  // options. Honest copy: homing always happens at print start (the printer
+  // and the file's own start G-code home the machine); these switches gate the
+  // calibration routines only - no dashboard flag can suppress file G-code.
   $('print-options').innerHTML = `
     <label class="flex items-center gap-2"><input type="checkbox" data-opt="use_ams" class="accent-bambu" checked> Use AMS mapping</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="bed_levelling" class="accent-bambu" checked> Bed levelling</label>
+    <label class="flex items-center gap-2"><input type="checkbox" data-opt="bed_levelling" class="accent-bambu" checked> Bed levelling (auto bed leveling)</label>
     <label class="flex items-center gap-2"><input type="checkbox" data-opt="flow_cali" class="accent-bambu" checked> Flow calibration</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="vibration_cali" class="accent-bambu" checked> Vibration calibration</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="timelapse" class="accent-bambu" checked> Timelapse</label>`;
+    <label class="flex items-center gap-2"><input type="checkbox" data-opt="vibration_cali" class="accent-bambu" checked> Vibration compensation</label>
+    <label class="flex items-center gap-2"><input type="checkbox" data-opt="timelapse" class="accent-bambu" checked> Timelapse</label>
+    <label class="flex items-center gap-2"><input type="checkbox" data-opt="layer_inspect" class="accent-bambu" checked> First-layer inspection</label>
+    <p class="print-options-note">The printer always homes at print start — its start G-code commands it, so homing cannot be turned off here. These switches control the calibration routines (bed levelling, flow, vibration) and extras, not homing.</p>`;
 }
 
 function openTrayPicker(filamentId) {
@@ -3116,6 +3124,7 @@ async function startPrintFromDialog() {
         use_ams: useAms,
         ams_mapping: useAms && mapping.length ? mapping : null,
         bed_levelling: opt('bed_levelling', true),
+        layer_inspect: opt('layer_inspect', true),
         flow_cali: opt('flow_cali', true),
         vibration_cali: opt('vibration_cali', true),
         timelapse: opt('timelapse', true),

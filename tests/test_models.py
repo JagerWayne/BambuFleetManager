@@ -70,6 +70,17 @@ def test_skip_object_ids_default_to_absent():
     assert PrintRemoteCommand(path="/benchy.3mf").skip_object_ids is None
 
 
+def test_print_remote_command_defaults():
+    cmd = PrintRemoteCommand(path="/benchy.3mf")
+    assert cmd.plate_index == 0
+    assert cmd.bed_levelling is True
+    assert cmd.layer_inspect is True
+    assert cmd.flow_cali is True
+    assert cmd.vibration_cali is True
+    assert cmd.timelapse is True
+    assert cmd.use_ams is True
+
+
 def test_skip_object_ids_accept_ints_only():
     assert PrintRemoteCommand(path="/a.3mf", skip_object_ids=[60, 112]).skip_object_ids == [60, 112]
     with pytest.raises(Exception):

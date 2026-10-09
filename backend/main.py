@@ -1801,6 +1801,7 @@ async def print_remote(printer_id: str, cmd: PrintRemoteCommand):
             "url": f"file:///sdcard{cmd.path}",
             "bed_type": printer.bed_type,
             "bed_levelling": cmd.bed_levelling,
+            "layer_inspect": cmd.layer_inspect,
             "flow_cali": cmd.flow_cali,
             "vibration_cali": cmd.vibration_cali,
             "timelapse": cmd.timelapse,

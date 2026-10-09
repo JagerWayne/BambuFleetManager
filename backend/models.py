@@ -302,6 +302,8 @@ class PrintRemoteCommand(RemotePath):
     #: 0 = pick the plate that is actually inside the archive (recommended).
     plate_index: int = Field(0, ge=0)
     bed_levelling: bool = True
+    #: First-layer inspection (the printer's camera check of the first layer).
+    layer_inspect: bool = True
     flow_cali: bool = True
     vibration_cali: bool = True
     timelapse: bool = True

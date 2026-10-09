@@ -551,6 +551,17 @@ def test_print_remote_from_sd_card(node, client, monkeypatch):
     assert payload["param"] == "Metadata/plate_5.gcode"
 
 
+def test_print_remote_sends_layer_inspect_flag(node, client, monkeypatch):
+    monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
+    main_module.latest_reports[node] = {"gcode_state": "PREPARE"}
+    res = client.post(
+        f"/api/printers/{node}/print-remote",
+        json={"path": "/benchy.3mf", "layer_inspect": False},
+    )
+    assert res.status_code == 200
+    assert last_publish(client)["print"]["layer_inspect"] is False
+
+
 def test_print_remote_in_subfolder(node, client, monkeypatch):
     monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [1])
     main_module.latest_reports[node] = {"gcode_state": "RUNNING"}

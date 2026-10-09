@@ -1182,6 +1182,163 @@ input[type="range"].slider::-moz-range-thumb {
   background: var(--surface-2);
 }
 
+/* --- server settings modal: labelled groups ---------------------------- */
+
+.settings-group {
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--line-soft);
+}
+.settings-group:first-child { border-top: 0; padding-top: 0; }
+
+.settings-group-title {
+  margin-bottom: var(--space-2xs);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-strong);
+}
+
+.settings-note {
+  margin-top: var(--space-2xs);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-2xs);
+  color: var(--text-mut);
+}
+
+/* destructive notice: removing the token disables sign-in */
+.notice-danger {
+  align-items: flex-start;
+  margin-top: var(--space-2xs);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* updates live in their own footer section of the settings modal */
+.settings-updates {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+/* --- job control toolbar ------------------------------------------------ */
+
+.job-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.job-group {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+/* every button in a group shares the width, so Pause/Resume/Stop read as equals */
+.job-group .btn { flex: 1 1 0; min-width: 0; }
+
+/* the primary state row: prominent, full width, wraps as one block */
+.job-group-primary { flex: 3 1 100%; }
+
+/* reprint reopens the preview - it is not a machine command */
+.job-group-reprint { flex: 1 1 auto; }
+.job-group-reprint .btn { flex: 0 0 auto; }
+
+/* recovery: quieter, dashed "only when something went wrong" row */
+.job-group-recovery {
+  flex: 2 1 100%;
+  padding: var(--space-2xs);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+/* --- lighting: one card per light --------------------------------------- */
+
+.light-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2xs);
+}
+@media (min-width: 640px) {
+  .light-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.light-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.light-card-title {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-body);
+}
+
+.light-card-state {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-mut);
+}
+
+/* --- jog pad: axis badge, minus, step indicator, plus ------------------- */
+
+.jog-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+.jog-row {
+  display: grid;
+  grid-template-columns: 2.2rem minmax(0, 1fr) 4rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.jog-badge {
+  display: grid;
+  place-items: center;
+  height: var(--tap-min);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.jog-btn { min-width: var(--tap-min); font-size: var(--fs-lg); }
+
+.jog-step {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-mut);
+}
+
+/* Z moves at the slow feed - make that visible, not just documented */
+.jog-row.is-z .jog-badge { background: var(--warn-soft); color: var(--warn); }
+.jog-row.is-z .jog-step { color: var(--warn); }
+
+/* print dialog: the honest note under the options switches */
+.print-options-note {
+  padding-top: var(--space-2xs);
+  border-top: 1px dashed var(--line-soft);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-2xs);
+  color: var(--text-mut);
+}
+
 .plate-frame {
   display: grid;
   place-items: center;
