@@ -2765,14 +2765,8 @@ function renderPrintDialog() {
   const { plan, plate } = state.print;
   if (!plan) return;
 
-  // Skipping only makes sense for a job that is already running. Keep the
-  // button's state in step with the dialog's printer.
-  const printer = printerById(state.print.printerId);
-  const skipBtn = $('print-skip');
-  if (skipBtn) {
-    skipBtn.disabled = !printer || (printer.status !== 'running' && printer.status !== 'paused');
-  }
-
+  // The Skip objects button always opens the modal; the modal itself reports
+  // when the printer is not running a job, so it must not be greyed out here.
   $('print-sub').textContent = `${plan.name} · ${plan.path}`;
 
   // plate thumbnails
@@ -2889,7 +2883,6 @@ async function openPrintDialog(printerId, path) {
   $('print-img').classList.add('hidden');
   $('print-img-loading').textContent = 'loading preview…';
   $('print-img-loading').classList.remove('hidden');
-  $('print-skip').disabled = true;
   $('modal-print').classList.replace('hidden', 'flex');
   try {
     const plan = await api(`/api/printers/${printerId}/files/plan?path=${encodeURIComponent(path)}`);

@@ -2,8 +2,8 @@
  * point and the fullscreen camera HUD (jsdom).
  *
  * The bed fetches plate geometry once per (path, plate) and draws one
- * tappable toggle per object; the print modal's "Skip objects…" button is only
- * live while its printer is actually running. */
+ * tappable toggle per object; the print modal's "Skip objects…" button always
+ * opens the modal, which itself enforces the running-job requirement. */
 const fs = require('fs');
 const { JSDOM } = require('jsdom');
 
@@ -102,16 +102,26 @@ const objectCalls = () => calls.filter((c) => c.url.indexOf('/files/objects') >=
   window.openPrintDialog('n1', '/Cube_plate_1.gcode.3mf');
   await sleep(40);
   check('print modal has a Skip objects button', Boolean(doc.getElementById('print-skip')));
-  check('Skip objects is enabled while the printer runs',
+  check('Skip objects is always clickable (the modal enforces job state)',
     doc.getElementById('print-skip').disabled === false, String(doc.getElementById('print-skip').disabled));
 
+  // idle printer: the button stays live and opens the modal, which refuses to skip
   window.__ws.onmessage({
     data: JSON.stringify({ event: 'telemetry', printer_id: 'n1', data: { gcode_state: 'IDLE' } })
   });
   await sleep(10);
-  window.renderPrintDialog();
-  check('Skip objects is disabled while the printer is idle',
-    doc.getElementById('print-skip').disabled === true, String(doc.getElementById('print-skip').disabled));
+  check('Skip objects stays enabled while the printer is idle',
+    doc.getElementById('print-skip').disabled === false, String(doc.getElementById('print-skip').disabled));
+  doc.getElementById('print-skip').click();
+  await sleep(30);
+  check('idle printer still opens the skip modal',
+    doc.getElementById('modal-skip').classList.contains('flex'));
+  check('idle modal says it is not printing',
+    (doc.getElementById('skip-sub').textContent || '').indexOf('not printing') >= 0,
+    doc.getElementById('skip-sub').textContent);
+  check('idle modal cannot confirm a skip',
+    doc.getElementById('skip-confirm').disabled === true, String(doc.getElementById('skip-confirm').disabled));
+  window.closeSkipModal();
   window.closePrintDialog();
 
   // fullscreen HUD lives inside the camera box
