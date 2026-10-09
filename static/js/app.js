@@ -459,6 +459,7 @@ function createCard(printer) {
 
   const entry = {
     root, refs, tab: null, lastTab: 'control', jogStep: 1, camera: null,
+    printerId: printer.id, inView: false,
     fileCache: { path: '/', listing: null, loading: false, error: null },
     camRefs: {
       img: root.querySelector('[data-role="cam-img"]'),
@@ -524,13 +525,17 @@ function createCard(printer) {
     if (filename) dispatchToPrinter(printer.id, filename);
   });
 
-  // Start the stream only while the card is on screen (one ffmpeg per visible
-  // card, not per configured printer).
+// Start the stream only while the card is on screen (one ffmpeg per visible
+// card, not per configured printer).
   if ('IntersectionObserver' in window) {
     entry.observer = new IntersectionObserver((entries) => {
       entries.forEach((e) => {
+        entry.inView = e.isIntersecting;
+        // A fullscreen box leaves the normal flow, so the observer reports the
+        // card as off screen right as the user goes fullscreen. Stopping here
+        // would kill a stream that is plainly still running.
         if (e.isIntersecting && state.cameraEnabled) startCamera(printer, entry);
-        else if (!e.isIntersecting) stopCamera(entry);
+        else if (!e.isIntersecting && !isCamFullscreen(entry)) stopCamera(entry);
       });
     }, { rootMargin: '250px' });
     entry.observer.observe(root);
@@ -1298,6 +1303,27 @@ function cameraFullscreen(entry, on) {
   }
 }
 
+function isCamFullscreen(entry) {
+  const box = entry && entry.camRefs && entry.camRefs.box;
+  return Boolean(box && document.fullscreenElement === box);
+}
+
+// Going fullscreen takes the camera box out of the flow, so the observer calls
+// the card off screen and the stream would be torn down. Re-sync on both edges
+// of the transition: keep it running while fullscreen, and bring it back when
+// the card is still visible after leaving fullscreen.
+document.addEventListener('fullscreenchange', () => {
+  cards.forEach((entry) => {
+    if (!entry || !entry.camRefs || !entry.camRefs.box) return;
+    const full = isCamFullscreen(entry);
+    if (full && state.cameraEnabled && !entry.camera) {
+      startCamera(printerById(entry.printerId), entry);
+    } else if (!full && state.cameraEnabled && entry.inView && !entry.camera) {
+      startCamera(printerById(entry.printerId), entry);
+    }
+  });
+});
+
 /* ------------------------------------------------------------- interactions */
 
 async function handleAction(printerId, el, entry) {
@@ -1872,7 +1898,12 @@ function openSettings() {
     $('settings-url').textContent = `http://${location.hostname}:${cfg.port || 8000}`;
     $('update-current').textContent = `v${($('app-version').textContent || '').trim()}`;
     $('update-result').classList.add('hidden');
-    $('update-install').classList.add('hidden');
+    $('update-download').classList.add('hidden');
+    $('update-staged').classList.add('hidden');
+    $('update-staged-actions').classList.add('hidden');
+    $('update-install').disabled = false;
+    $('update-install').textContent = 'Run installer';
+    $('update-download').disabled = false;
     $('modal-settings').classList.replace('hidden', 'flex');
   }).catch((err) => toast(err.message, 'error'));
 }
@@ -1918,17 +1949,17 @@ async function checkForUpdates() {
   const btn = $('update-check');
   btn.disabled = true;
   btn.textContent = 'Checking…';
-  $('update-install').classList.add('hidden');
+  $('update-download').classList.add('hidden');
   try {
     const r = await api('/api/update');
     if (r.current) $('update-current').textContent = `v${r.current}`;
     if (r.update_available) {
       const size = r.asset_size ? ` (${formatBytes(r.asset_size)})` : '';
       setUpdateResult(`Version ${r.latest} is available${size}.`, 'ok');
-      const install = $('update-install');
-      install.dataset.version = r.latest;
-      install.textContent = `Download & install ${r.latest}`;
-      install.classList.remove('hidden');
+      const download = $('update-download');
+      download.dataset.version = r.latest;
+      download.textContent = `Download installer for ${r.latest}`;
+      download.classList.remove('hidden');
     } else if (r.error) {
       setUpdateResult(r.error, 'warn');
     } else {
@@ -1942,20 +1973,45 @@ async function checkForUpdates() {
   }
 }
 
+// Step 1: fetch the installer and leave it on disk. Nothing is launched, so a
+// failed or slow download can simply be retried without touching the install.
+async function downloadUpdate() {
+  const download = $('update-download');
+  const version = download.dataset.version || 'the new version';
+  download.disabled = true;
+  download.textContent = 'Downloading… (~45 MB)';
+  try {
+    const r = await api('/api/update/download', { method: 'POST' });
+    setUpdateResult(`Downloaded ${version}. Run the installer whenever you are ready.`, 'ok');
+    const staged = $('update-staged');
+    staged.textContent = `${r.installer} · ${formatBytes(r.size)}`;
+    staged.classList.remove('hidden');
+    $('update-save').setAttribute('download', `BambuFleetManagerSetup-${r.version}.exe`);
+    $('update-install').dataset.version = r.version;
+    $('update-staged-actions').classList.remove('hidden');
+  } catch (err) {
+    setUpdateResult(`${err.message}`, 'error');
+  } finally {
+    download.disabled = false;
+    download.textContent = `Download installer for ${version}`;
+  }
+}
+
+// Step 2: launch the installer that is already on disk, then let the app quit.
 async function installUpdate() {
   const install = $('update-install');
-  const version = install.dataset.version || 'the new version';
-  if (!window.confirm(`Download and install ${version}?\n\nThe app will close and restart when it's done.`)) return;
+  const version = install.dataset.version || $('update-download').dataset.version || 'the new version';
+  if (!window.confirm(`Run the ${version} installer?\n\nThe app will close and restart when it's done.`)) return;
   install.disabled = true;
-  install.textContent = 'Downloading…';
+  install.textContent = 'Starting…';
   try {
-    await api('/api/update/install', { method: 'POST' });
-    setUpdateResult('Installing… the app will restart in a moment.', 'ok');
+    const r = await api('/api/update/run', { method: 'POST' });
+    setUpdateResult(`Installing ${r.version}… the app will restart in a moment.`, 'ok');
     install.textContent = 'Installing…';
   } catch (err) {
     setUpdateResult(err.message, 'error');
     install.disabled = false;
-    install.textContent = 'Download & install';
+    install.textContent = 'Run installer';
   }
 }
 
@@ -2290,6 +2346,7 @@ function wireStatic() {
   });
   $('settings-cancel').addEventListener('click', closeSettings);
   $('update-check').addEventListener('click', checkForUpdates);
+  $('update-download').addEventListener('click', downloadUpdate);
   $('update-install').addEventListener('click', installUpdate);
   $('speed-cancel').addEventListener('click', closeSpeedModal);
   $('speed-options').addEventListener('click', (e) => {
