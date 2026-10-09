@@ -640,6 +640,60 @@ def test_camera_snapshot_unavailable(node, client, monkeypatch):
     assert res.status_code == 502
 
 
+def test_camera_mjpeg_streams_then_releases_the_ffmpeg(node, client, monkeypatch):
+    """The stream must be registered up front and released when it ends, or the
+    ffmpeg process outlives the viewer."""
+    calls = []
+
+    class FakeStream:
+        def __init__(self):
+            self.pending = [b"--frame\r\n", b"Content-Type: image/jpeg\r\n\r\n", b"jpeg"]
+
+        def read(self, size=4096):
+            return self.pending.pop(0) if self.pending else b""
+
+    stream = FakeStream()
+    monkeypatch.setattr(main_module.camera_mod, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(main_module.camera_mod, "start_mjpeg_stream",
+                        lambda *a, **k: (calls.append("start"), stream)[1])
+    monkeypatch.setattr(main_module.camera_mod, "stop_mjpeg_stream",
+                        lambda *a, **k: calls.append("stop"))
+
+    res = client.get(f"/api/printers/{node}/camera/mjpeg")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("multipart/x-mixed-replace")
+    assert b"jpeg" in res.content
+    assert calls[0] == "start"
+    assert calls[-1] == "stop"
+
+
+def test_camera_mjpeg_is_one_stream_per_printer(node, client, monkeypatch):
+    """Starting a stream passes the printer id, so the registry can replace it."""
+    seen = {}
+
+    class FakeStream:
+        def read(self, size=4096):
+            return b""
+
+    def fake_start(printer_id, ip, code, width, fps):
+        seen["printer_id"] = printer_id
+        seen["ip"] = ip
+        return FakeStream()
+
+    monkeypatch.setattr(main_module.camera_mod, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(main_module.camera_mod, "start_mjpeg_stream", fake_start)
+    monkeypatch.setattr(main_module.camera_mod, "stop_mjpeg_stream", lambda *a, **k: None)
+
+    assert client.get(f"/api/printers/{node}/camera/mjpeg").status_code == 200
+    assert seen["printer_id"] == node
+    assert seen["ip"] == "10.0.0.5"
+
+
+def test_camera_mjpeg_503_without_ffmpeg(node, client, monkeypatch):
+    monkeypatch.setattr(main_module.camera_mod, "ffmpeg_exe", lambda: None)
+    assert client.get(f"/api/printers/{node}/camera/mjpeg").status_code == 503
+
+
 def test_camera_stream_proxies(node, client, monkeypatch):
     monkeypatch.setattr(
         main_module.camera_mod,

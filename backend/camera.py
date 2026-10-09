@@ -22,8 +22,9 @@ import ssl
 import struct
 import subprocess
 import sys
+import threading
 import urllib.parse
-from typing import Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import requests
 
@@ -93,6 +94,110 @@ def _ffmpeg_input(ip: str, access_code: str, port: int = RTSP_PORT) -> list:
     ]
 
 
+class MjpegProcess:
+    """A running ``ffmpeg`` MJPEG transcode, with an idempotent stop.
+
+    The printer only serves one RTSP client at a time, so a stream that is
+    replaced or abandoned has to be shut down explicitly rather than left to the
+    garbage collector: its reader thread stays blocked inside ``stdout.read()``
+    until the process it is reading from actually exits.
+    """
+
+    def __init__(self, process: "subprocess.Popen[bytes]") -> None:
+        self.process = process
+        self.stopped = False
+
+    def read(self, size: int = CHUNK) -> bytes:
+        stdout = self.process.stdout
+        if stdout is None:
+            return b""
+        return stdout.read(size)
+
+    def stop(self, timeout: float = 3.0) -> None:
+        """Terminate (then kill) ffmpeg and close the pipe. Safe to call twice."""
+        if self.stopped:
+            return
+        self.stopped = True
+        try:
+            self.process.terminate()
+        except Exception:
+            pass
+        try:
+            self.process.wait(timeout=timeout)
+        except Exception:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+        try:
+            if self.process.stdout is not None:
+                self.process.stdout.close()
+        except Exception:
+            pass
+
+
+#: One live MJPEG stream per printer, so a reload or a second viewer takes over
+#: instead of stacking up another ffmpeg against the same camera.
+_live_lock = threading.Lock()
+_live_streams: Dict[str, MjpegProcess] = {}
+
+
+def start_mjpeg_stream(
+    printer_id: str, ip: str, access_code: str,
+    width: int = 960, fps: int = 10, port: int = RTSP_PORT,
+) -> MjpegProcess:
+    """Spawn an MJPEG transcode for ``printer_id``, replacing any existing one."""
+    exe = ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("ffmpeg is not available (pip install imageio-ffmpeg)")
+
+    args = [exe, *_ffmpeg_input(ip, access_code, port),
+            "-an", "-vf", f"scale={width}:-2", "-r", str(fps),
+            "-q:v", "7", "-f", "mpjpeg", "-"]
+
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=hidden_creation_flags(),
+    )
+    stream = MjpegProcess(process)
+    with _live_lock:
+        previous = _live_streams.get(printer_id)
+        _live_streams[printer_id] = stream
+    if previous is not None:
+        logger.info("Replacing the live stream for %s", printer_id)
+        previous.stop(0.0)   # the old reader is blocked on it, so free it now
+    return stream
+
+
+def stop_mjpeg_stream(printer_id: str, stream: Optional["MjpegProcess"] = None) -> None:
+    """Stop a printer's live stream (the one given, or whatever is registered)."""
+    with _live_lock:
+        current = _live_streams.get(printer_id)
+        if stream is None or current is stream:
+            _live_streams.pop(printer_id, None)
+    target = stream if stream is not None else current
+    if target is not None:
+        target.stop()
+
+
+def stop_all_mjpeg_streams() -> int:
+    """Stop every live stream; returns how many were running."""
+    with _live_lock:
+        streams = list(_live_streams.values())
+        _live_streams.clear()
+    for stream in streams:
+        stream.stop()
+    return len(streams)
+
+
+def live_stream_count() -> int:
+    with _live_lock:
+        return len(_live_streams)
+
+
 def ffmpeg_mjpeg_stream(
     ip: str, access_code: str, width: int = 960, fps: int = 10, port: int = RTSP_PORT
 ) -> Iterator[bytes]:
@@ -101,6 +206,9 @@ def ffmpeg_mjpeg_stream(
     MJPEG in a ``multipart/x-mixed-replace`` response plays in every browser
     through a plain ``<img>``, which avoids depending on the browser's H.264
     WebCodecs support.
+
+    This is the unmanaged form (one process, no registry); the HTTP endpoint
+    uses :func:`start_mjpeg_stream` so streams can be replaced and torn down.
     """
     exe = ffmpeg_exe()
     if not exe:
@@ -117,25 +225,15 @@ def ffmpeg_mjpeg_stream(
         stdin=subprocess.DEVNULL,
         creationflags=hidden_creation_flags(),
     )
+    stream = MjpegProcess(process)
     try:
-        assert process.stdout is not None
         while True:
-            chunk = process.stdout.read(CHUNK)
+            chunk = stream.read()
             if not chunk:
                 break
             yield chunk
     finally:
-        try:
-            process.terminate()
-        except Exception:
-            pass
-        try:
-            process.wait(timeout=3)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
+        stream.stop()
 
 
 def ffmpeg_snapshot(ip: str, access_code: str, width: int = 1280, port: int = RTSP_PORT) -> Optional[bytes]:

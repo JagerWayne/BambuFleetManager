@@ -411,6 +411,10 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        # never leave ffmpeg transcodes behind, even on a hard shutdown
+        stopped = camera_mod.stop_all_mjpeg_streams()
+        if stopped:
+            logger.info("Stopped %d live camera stream(s)", stopped)
         if mqtt_manager:
             mqtt_manager.shutdown()
 
@@ -1609,11 +1613,22 @@ async def camera_snapshot(printer_id: str, cache_bust: Optional[int] = None):
 
 
 @app.get("/api/printers/{printer_id}/camera/mjpeg")
-async def camera_mjpeg(printer_id: str, width: int = Query(960, ge=160, le=1920), fps: int = Query(10, ge=1, le=30)):
+async def camera_mjpeg(
+    printer_id: str,
+    request: Request,
+    width: int = Query(960, ge=160, le=1920),
+    fps: int = Query(10, ge=1, le=30),
+):
     """Live view as MJPEG - plays in any browser through a plain <img> tag.
 
     ffmpeg transcodes the printer's RTSPS H.264, so the browser needs no codec
     support of its own.
+
+    One stream per printer: starting a new one stops the previous stream for the
+    same printer, so a page reload or a second viewer takes over instead of
+    stacking up another ffmpeg. The reader runs off the event loop and the
+    process is torn down in ``finally``, which runs even when the client
+    disconnects - and killing ffmpeg is what unblocks a stalled read.
     """
     printer = get_printer(printer_id)
     if not camera_mod.ffmpeg_exe():
@@ -1622,13 +1637,31 @@ async def camera_mjpeg(printer_id: str, width: int = Query(960, ge=160, le=1920)
             detail="ffmpeg is not installed. Run: pip install imageio-ffmpeg (or install ffmpeg).",
         )
 
-    def chunks():
+    try:
+        stream = await run_blocking(
+            camera_mod.start_mjpeg_stream, printer_id, printer.ip, printer.access_code, width, fps
+        )
+    except Exception as exc:
+        logger.error("Could not start the MJPEG stream for %s: %s", printer_id, exc)
+        raise HTTPException(status_code=502, detail=f"Camera stream unavailable: {exc}")
+
+    loop = asyncio.get_running_loop()
+
+    async def chunks():
         try:
-            yield from camera_mod.ffmpeg_mjpeg_stream(
-                printer.ip, printer.access_code, width=width, fps=fps
-            )
+            while True:
+                if await request.is_disconnected():
+                    logger.info("Viewer left the MJPEG stream for %s", printer_id)
+                    break
+                chunk = await loop.run_in_executor(None, stream.read, 4096)
+                if not chunk:
+                    break
+                yield chunk
         except Exception as exc:  # client left, camera busy, ffmpeg died
             logger.info("MJPEG stream for %s ended: %s", printer_id, exc)
+        finally:
+            # stop off the loop: terminate() may wait for the process to exit
+            await loop.run_in_executor(None, camera_mod.stop_mjpeg_stream, printer_id, stream)
 
     return StreamingResponse(
         chunks(),

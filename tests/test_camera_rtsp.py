@@ -301,3 +301,124 @@ def test_snapshot_hides_the_ffmpeg_console(monkeypatch):
 
     assert c.ffmpeg_snapshot("10.0.0.9", "code") == b"\xff\xd8jpegdata"
     assert seen["creationflags"] == c.hidden_creation_flags()
+
+
+# --------------------------------------------------- one live stream per printer
+# The printer serves a single RTSP client, so a replaced or abandoned stream must
+# be shut down or its ffmpeg lingers forever (its reader is blocked on the pipe).
+
+
+class FakeProc:
+    """Minimal Popen stand-in recording how it was stopped."""
+
+    made = []
+
+    def __init__(self, *args, **kwargs):
+        self.terminated = False
+        self.killed = False
+        self.waited = False
+        self.stdout = None
+        FakeProc.made.append(self)
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.fixture()
+def fake_popen(monkeypatch):
+    from backend import camera as c
+
+    FakeProc.made = []
+    c.stop_all_mjpeg_streams()          # start each test with an empty registry
+    monkeypatch.setattr(c, "ffmpeg_exe", lambda: "ffmpeg")
+    monkeypatch.setattr(c.subprocess, "Popen", FakeProc)
+    yield FakeProc
+    c.stop_all_mjpeg_streams()
+
+
+def test_start_registers_one_stream_per_printer(fake_popen):
+    from backend import camera as c
+
+    c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    assert c.live_stream_count() == 1
+    c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    assert c.live_stream_count() == 1, "a second viewer must replace, not stack"
+
+
+def test_starting_a_second_stream_stops_the_first(fake_popen):
+    from backend import camera as c
+
+    first = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    second = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    assert first.process.terminated is True
+    assert second.process.terminated is False
+
+
+def test_different_printers_keep_their_own_stream(fake_popen):
+    from backend import camera as c
+
+    first = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    second = c.start_mjpeg_stream("p2", "10.0.0.2", "code")
+    assert c.live_stream_count() == 2
+    assert first.process.terminated is False
+    assert second.process.terminated is False
+
+
+def test_stop_mjpeg_stream_stops_and_deregisters(fake_popen):
+    from backend import camera as c
+
+    stream = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    c.stop_mjpeg_stream("p1", stream)
+    assert stream.process.terminated is True
+    assert c.live_stream_count() == 0
+
+
+def test_stop_mjpeg_stream_leaves_a_newer_stream_alone(fake_popen):
+    from backend import camera as c
+
+    stale = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    fresh = c.start_mjpeg_stream("p1", "10.0.0.1", "code")   # replaces stale
+    c.stop_mjpeg_stream("p1", stale)                         # old generator finally
+    assert c.live_stream_count() == 1
+    assert fresh.process.terminated is False
+
+
+def test_stop_all_streams_clears_everything(fake_popen):
+    from backend import camera as c
+
+    a = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    b = c.start_mjpeg_stream("p2", "10.0.0.2", "code")
+    assert c.stop_all_mjpeg_streams() == 2
+    assert c.live_stream_count() == 0
+    assert a.process.terminated is True and b.process.terminated is True
+
+
+def test_stopping_twice_is_harmless(fake_popen):
+    from backend import camera as c
+
+    stream = c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    c.stop_mjpeg_stream("p1", stream)
+    c.stop_mjpeg_stream("p1", stream)
+    assert c.live_stream_count() == 0
+    assert stream.process.terminated is True
+
+
+def test_stream_registry_uses_hidden_flags(fake_popen, monkeypatch):
+    from backend import camera as c
+
+    seen = {}
+
+    def recording_popen(args, **kwargs):
+        seen.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(c.subprocess, "Popen", recording_popen)
+    c.start_mjpeg_stream("p1", "10.0.0.1", "code")
+    assert seen["creationflags"] == c.hidden_creation_flags()
