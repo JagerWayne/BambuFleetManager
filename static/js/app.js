@@ -1168,7 +1168,13 @@ function fileActions(f, printingBusy) {
       ${primary}
       <details class="file-menu">
         <summary class="btn btn-ghost file-menu-toggle" title="More actions" aria-label="More actions">▾</summary>
-        <div class="file-menu-panel">${items.join('')}</div>
+        <div class="file-menu-panel">
+          <div class="file-menu-card" role="dialog" aria-label="Actions for ${escapeHtml(f.name)}">
+            <p class="file-menu-title">${escapeHtml(f.name)}</p>
+            ${items.join('')}
+            <button class="file-menu-cancel" data-action="file-menu-close">Cancel</button>
+          </div>
+        </div>
       </details>
     </div>`;
 }
@@ -1613,6 +1619,11 @@ async function handleAction(printerId, el, entry) {
         toast('deleted');
         loadFiles(printerId, entry.fileCache.path, true);
       } catch (err) { toast(err.message, 'error'); }
+      break;
+    }
+    case 'file-menu-close': {
+      const menu = el.closest('details.file-menu');
+      if (menu) menu.removeAttribute('open');
       break;
     }
     case 'rename-sd': {
@@ -2061,10 +2072,14 @@ function refreshFileView(target) {
 }
 
 
-// Close any open per-file menu when the click lands elsewhere.
+// Close an open per-file menu. A tap on the modal backdrop (the panel itself,
+// not the card inside it) closes it too, so the backdrop is a real dismiss
+// surface while taps inside the card do nothing.
 function closeFileMenus(except) {
   document.querySelectorAll('details.file-menu[open]').forEach((d) => {
-    if (!except || !d.contains(except)) d.removeAttribute('open');
+    const panel = d.querySelector('.file-menu-panel');
+    const onBackdrop = except && panel && except === panel;
+    if (onBackdrop || !except || !d.contains(except)) d.removeAttribute('open');
   });
 }
 

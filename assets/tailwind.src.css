@@ -1213,7 +1213,8 @@ input[type="range"].slider::-moz-range-thumb {
   gap: var(--space-2xs);
 }
 
-/* per-row action menu: Print (or Get) is visible, the rest live behind the caret */
+/* per-row action menu - the visible button is the primary action, the rest
+   live behind the caret */
 .file-menu { position: relative; }
 
 .file-menu-toggle {
@@ -1225,28 +1226,52 @@ input[type="range"].slider::-moz-range-thumb {
 .file-menu-toggle::-webkit-details-marker { display: none; }
 .file-menu[open] > .file-menu-toggle { background: var(--surface-3); color: var(--text-strong); }
 
+/* The actions open as a centred modal rather than a dropdown anchored to the
+   row: on a phone the last rows sit under the fixed bottom navigation, which
+   covered the menu. Fixed positioning also escapes the card's overflow clip. */
 .file-menu-panel {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 20;
+  position: fixed;
+  inset: 0;
+  z-index: 60;                 /* above the bottom nav (45), below toasts (70) */
+  display: grid;
+  place-items: center;
+  padding: var(--space-md);
+  background: var(--scrim);
+  backdrop-filter: blur(4px);
+}
+
+.file-menu-card {
   display: flex;
-  min-width: 9rem;
+  width: min(92vw, 22rem);
   flex-direction: column;
-  padding: 0.25rem;
-  border-radius: var(--radius-md);
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--line);
   background: var(--surface);
   box-shadow: var(--shadow-lg);
 }
+
+.file-menu-title {
+  margin-bottom: var(--space-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
 .file-menu-panel button {
   display: block;
   width: 100%;
-  padding: 0.5rem 0.6rem;
-  border-radius: var(--radius-sm);
+  min-height: var(--tap-min);
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-soft);
+  background: var(--surface-2);
   text-align: left;
   font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 700;
   color: var(--text-body);
   cursor: pointer;
@@ -1258,6 +1283,14 @@ input[type="range"].slider::-moz-range-thumb {
   background: transparent;
   color: var(--text-mut);
 }
+
+.file-menu-panel .file-menu-cancel {
+  border-color: transparent;
+  background: transparent;
+  text-align: center;
+  color: var(--text-mut);
+}
+.file-menu-panel .file-menu-cancel:hover { color: var(--text-strong); }
 
 /* =============================================================== toasts == */
 

@@ -89,6 +89,33 @@ function telemetry(data) {
   check('project menu has Delete', Boolean(projectMenu.querySelector('[data-action="delete-sd"]')));
   check('project menu has Get', Boolean(projectMenu.querySelector('[data-action="download-sd"]')));
 
+  /* --- the actions are a centred modal, not a row-anchored dropdown ----- */
+  // a dropdown hung off a bottom row was covered by the fixed bottom nav
+  check('menu renders as a card, not a bare list', Boolean(projectMenu.querySelector('.file-menu-card')));
+  check('menu names the file it acts on', projectMenu.textContent.includes('004.gcode.3mf'));
+  check('menu offers a Cancel', Boolean(projectMenu.querySelector('.file-menu-cancel')));
+
+  const projectDetails = projectRow.querySelector('details.file-menu');
+  const menuCard = projectMenu.querySelector('.file-menu-card');
+
+  projectDetails.setAttribute('open', '');
+  check('menu starts open', projectDetails.hasAttribute('open'));
+  projectMenu.querySelector('.file-menu-cancel').click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('Cancel closes the menu', !projectDetails.hasAttribute('open'));
+
+  projectDetails.setAttribute('open', '');
+  projectMenu.click();                       // a tap on the backdrop, not the card
+  await new Promise((r) => setTimeout(r, 20));
+  check('tapping the backdrop closes the menu', !projectDetails.hasAttribute('open'));
+
+  // a tap inside the card must not be treated as a backdrop tap
+  projectDetails.setAttribute('open', '');
+  menuCard.click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('tapping inside the card keeps the menu open', projectDetails.hasAttribute('open'));
+  projectDetails.removeAttribute('open');
+
   const videoRow = [...panel.querySelectorAll('.file-row')].find((r) => r.textContent.includes('timelapse.mp4'));
   check('video shows Get as the default', Boolean(videoRow.querySelector('[data-action="download-sd"]')));
   check('video has no Rename', !videoRow.querySelector('[data-action="rename-sd"]'));
