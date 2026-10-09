@@ -1730,6 +1730,24 @@ input[type="range"].slider::-moz-range-thumb {
 /* only the exit control takes clicks; the readouts stay click-through */
 .cam-hud .icon-btn { pointer-events: auto; }
 
+/* Camera controls: Start / Stop / Snapshot / Fullscreen and the status text,
+   overlaid on the bottom edge of the video box with a scrim so they read over
+   any picture. They live inside cam-box, so fullscreen keeps them usable. */
+.cam-controls {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 1.1rem 0.5rem 0.35rem;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0));
+}
+.cam-controls .icon-btn {
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+}
+
 /* the camera column of a printer card: capped, but never wider than 42% so
    two cards can share a row on wide screens */
 .card-aside { width: 100%; }

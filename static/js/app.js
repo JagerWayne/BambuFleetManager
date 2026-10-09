@@ -579,14 +579,13 @@ function createCard(printer) {
             <span class="t-mut" data-r="hudRemaining"></span>
             <button type="button" class="icon-btn shrink-0" data-action="cam-normal" aria-label="Exit fullscreen">✕</button>
           </div>
-        </div>
-
-        <div class="flex shrink-0 items-center gap-1">
-          <button class="icon-btn" data-action="cam-start" title="Start stream">▶</button>
-          <button class="icon-btn" data-action="cam-stop" title="Stop stream">■</button>
-          <button class="icon-btn" data-action="cam-snapshot" title="Save snapshot">◉</button>
-          <button class="icon-btn" data-action="cam-fullscreen" title="Fullscreen">⛶</button>
-          <span data-role="cam-status" class="ml-auto font-mono text-[9px] t-mut"></span>
+          <div class="cam-controls">
+            <button class="icon-btn" data-action="cam-start" title="Start stream" aria-label="Start stream">▶</button>
+            <button class="icon-btn" data-action="cam-stop" title="Stop stream" aria-label="Stop stream">■</button>
+            <button class="icon-btn" data-action="cam-snapshot" title="Save snapshot" aria-label="Save snapshot">◉</button>
+            <button class="icon-btn" data-action="cam-fullscreen" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+            <span data-role="cam-status" class="ml-auto font-mono text-[9px] t-mut"></span>
+          </div>
         </div>
 
         <div class="grid shrink-0 grid-cols-2 gap-2">
@@ -855,6 +854,10 @@ function refreshLive(body, printer) {
   // Reprint follows the reported job, which changes under telemetry.
   const reprintBtn = body.querySelector('[data-live="reprint"]');
   if (reprintBtn) reprintBtn.disabled = !printableJob(printer.job);
+
+  // Job buttons only exist while they can do something - hide/show in place,
+  // never re-serialise the panel.
+  applyJobButtonVisibility(body, printer);
 
   // The skip list only needs rebuilding when the objects, the current object or
   // the queued skips actually change - telemetry arrives several times a second.
@@ -1231,6 +1234,35 @@ function printableJob(job) {
   return Boolean(job) && job !== 'None' && /\.(3mf|gcode)$/i.test(baseName(job));
 }
 
+// Which job buttons can currently do something - state-inappropriate buttons
+// are hidden, not merely disabled. The control panel is only rebuilt on a tab
+// change, so refreshLive() applies this on every telemetry tick against the
+// stable data-job-btn hooks.
+function jobButtonVisible(key, p) {
+  const st = p.status;
+  const running = st === 'running';
+  const paused = st === 'paused';
+  const failed = st === 'failed' || Boolean(p.activeError) || Boolean(p.printError);
+  switch (key) {
+    case 'pause': return running;
+    case 'resume': return paused;
+    case 'stop': return running || paused;
+    case 'reprint': return !running && !paused && printableJob(p.job);
+    case 'recover':
+    case 'clear-error': return failed;
+    default: return true;
+  }
+}
+
+function applyJobButtonVisibility(scope, p) {
+  scope.querySelectorAll('[data-job-btn]').forEach((b) => {
+    b.classList.toggle('hidden', !jobButtonVisible(b.dataset.jobBtn, p));
+  });
+  scope.querySelectorAll('[data-job-group]').forEach((g) => {
+    g.classList.toggle('hidden', !g.querySelector('[data-job-btn]:not(.hidden)'));
+  });
+}
+
 function controlHtml(p) {
   const homed = p.homed === true;
   const printing = p.status === 'running';
@@ -1317,21 +1349,25 @@ function controlHtml(p) {
       ${choice('calibrate', 'vibration_calibration', 'Vibration', 'Input shaping')}
     </div>`;
 
+  // Buttons start in the right state for the status the panel was built with;
+  // refreshLive() keeps them tracking telemetry afterwards.
+  const jb = (key) => (jobButtonVisible(key, p) ? '' : ' hidden');
+
   return `
     <div class="grid gap-3 xl:grid-cols-2">
       ${section('Job control', `
         <div class="job-toolbar">
-          <div class="job-group job-group-primary">
-            ${btn('Pause', 'pause', { cls: 'btn-warn' })}
-            ${btn('Resume', 'resume', { cls: 'btn-primary' })}
-            ${btn('Stop', 'stop', { cls: 'btn-danger' })}
+          <div class="job-group job-group-primary" data-job-group="primary">
+            ${btn('Pause', 'pause', { cls: 'btn-warn' + jb('pause'), data: { jobBtn: 'pause' } })}
+            ${btn('Resume', 'resume', { cls: 'btn-primary' + jb('resume'), data: { jobBtn: 'resume' } })}
+            ${btn('Stop', 'stop', { cls: 'btn-danger' + jb('stop'), data: { jobBtn: 'stop' } })}
           </div>
-          <div class="job-group job-group-reprint">
-            ${btn('Reprint', 'reprint', { cls: 'btn-ghost', disabled: !printableJob(p.job), data: { live: 'reprint' } })}
+          <div class="job-group job-group-reprint" data-job-group="reprint">
+            ${btn('Reprint', 'reprint', { cls: 'btn-ghost' + jb('reprint'), disabled: !printableJob(p.job), data: { live: 'reprint', jobBtn: 'reprint' } })}
           </div>
-          <div class="job-group job-group-recovery">
-            ${btn('Recover', 'retry', { cls: 'btn-ghost' })}
-            ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' })}
+          <div class="job-group job-group-recovery" data-job-group="recovery">
+            ${btn('Recover', 'retry', { cls: 'btn-ghost' + jb('recover'), data: { jobBtn: 'recover' } })}
+            ${btn('Clear error', 'clear-error', { cls: 'btn-ghost' + jb('clear-error'), data: { jobBtn: 'clear-error' } })}
           </div>
         </div>
         <p class="font-mono text-[10px] t-mut">State: <span data-live="status" class="t-body">${escapeHtml(p.status || 'unknown')}</span></p>
