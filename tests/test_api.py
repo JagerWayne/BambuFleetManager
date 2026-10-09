@@ -747,6 +747,48 @@ def test_temperature_sends_each_target(node, client):
     assert "M140 S60\n" in params
 
 
+# ------------------------------------------------------------------------- fans
+
+
+def test_fan_sends_an_m106_gcode_line(node, client):
+    res = client.post(f"/api/printers/{node}/fan", json={"fan": "aux", "speed": 100})
+    assert res.status_code == 200
+    params = [p["print"]["param"] for _, _, p in client.sent if p["print"]["command"] == "gcode_line"]
+    assert params == ["M106 P1 S255\n"]
+    # safe command: no confirmation flags required
+    assert res.json()["risk"] == "safe"
+
+
+def test_fan_accepts_the_three_fans(node, client):
+    for fan, index in (("part", 0), ("aux", 1), ("chamber", 3)):
+        client.sent.clear()
+        assert client.post(
+            f"/api/printers/{node}/fan", json={"fan": fan, "speed": 50}
+        ).status_code == 200
+        param = [p["print"]["param"] for _, _, p in client.sent if p["print"]["command"] == "gcode_line"][0]
+        assert param == f"M106 P{index} S128\n", fan
+
+
+def test_fan_rejects_an_unknown_fan(node, client):
+    res = client.post(f"/api/printers/{node}/fan", json={"fan": "turbo", "speed": 50})
+    assert res.status_code == 422
+
+
+def test_fan_rejects_an_out_of_range_speed(node, client):
+    assert client.post(
+        f"/api/printers/{node}/fan", json={"fan": "part", "speed": 101}
+    ).status_code == 422
+    assert client.post(
+        f"/api/printers/{node}/fan", json={"fan": "part", "speed": -1}
+    ).status_code == 422
+
+
+def test_fan_rejects_an_unknown_printer(client):
+    assert client.post(
+        "/api/printers/ghost/fan", json={"fan": "part", "speed": 50}
+    ).status_code == 404
+
+
 def test_temperature_rejects_over_cap(node, client):
     # 900 > 300 -> rejected by the request model
     assert client.post(

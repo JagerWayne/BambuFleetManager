@@ -216,6 +216,16 @@ class TemperatureCommand(BaseModel):
                 if v is not None}
 
 
+class FanCommand(BaseModel):
+    """Set one cooling fan's speed, as a percentage.
+
+    Moves no axes and heats nothing, so there is no confirmation gate.
+    """
+
+    fan: Literal["part", "aux", "chamber"] = "part"
+    speed: int = Field(ge=0, le=100)
+
+
 class JogCommand(BaseModel):
     """Relative move of one axis. Machine-moving - needs confirmation."""
 

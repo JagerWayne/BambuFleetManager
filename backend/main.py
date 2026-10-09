@@ -60,6 +60,7 @@ from backend.models import (
     DirectoryListing,
     DispatchResponse,
     ExtrudeCommand,
+    FanCommand,
     FilamentSettingCommand,
     FileNode,
     GenericCommand,
@@ -1329,6 +1330,21 @@ async def set_temperature(printer_id: str, cmd: TemperatureCommand):
         )
     logger.warning("TEMPERATURE change on %s: %s", printer_id, sent)
     return {"status": "sent", "targets": targets, "printer": printer_id}
+
+
+@app.post("/api/printers/{printer_id}/fan")
+async def set_fan(printer_id: str, cmd: FanCommand):
+    """Set a cooling fan's speed (percentage).
+
+    Moves no axes and heats nothing, so it is a `safe` command with no
+    confirmation gate - but it is still worth knowing which fan index the
+    firmware uses, hence each control sits next to that fan's reported speed.
+    """
+    get_printer(printer_id)
+    try:
+        return await dispatch(printer_id, "set_fan", {"fan": cmd.fan, "speed": cmd.speed})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/printers/{printer_id}/home")

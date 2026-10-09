@@ -197,6 +197,7 @@ function applyTelemetry(printer, t) {
   }
   if (t.cooling_fan_speed !== undefined) printer.fan = Math.round(num(t.cooling_fan_speed));
   if (t.big_fan1_speed !== undefined) printer.auxFan = Math.round(num(t.big_fan1_speed));
+  if (t.big_fan2_speed !== undefined) printer.chamberFan = Math.round(num(t.big_fan2_speed));
 
   if (t.ams) printer.ams = t.ams;
   if (t.ams_status !== undefined) printer.amsStatus = num(t.ams_status);
@@ -241,7 +242,7 @@ async function loadFleet() {
       const base = {
         status: 'idle', progress: 0, remainingSec: 0, nozzleTemp: 0, nozzleTarget: 0,
         bedTemp: 0, bedTarget: 0, job: 'None', speed: '-', fan: 0, auxFan: 0, ams: null,
-        lights: null, light: false, printError: 0, homed: null, seenAt: null
+        lights: null, light: false, fan: 0, auxFan: 0, chamberFan: 0, printError: 0, homed: null, seenAt: null
       };
       return Object.assign({}, base, prev || {}, {
         id: cfg.id, name: cfg.name, ip: cfg.ip, sn: cfg.sn,
@@ -709,6 +710,9 @@ function refreshLive(body, printer) {
   set('speed-current', speedLabel(printer) || 'unknown');
   set('light-chamber', (printer.lights && printer.lights.chamber_light) || 'unknown');
   set('light-work', (printer.lights && printer.lights.work_light) || 'unknown');
+  set('fan-part', `${printer.fan != null ? printer.fan : 0}%`);
+  set('fan-aux', `${printer.auxFan != null ? printer.auxFan : 0}%`);
+  set('fan-chamber', `${printer.chamberFan != null ? printer.chamberFan : 0}%`);
   set('status', printer.status || 'unknown');
 
   const hot = (printer.nozzleTemp || 0) >= 170 || (printer.nozzleTarget || 0) >= 170;
@@ -911,6 +915,38 @@ function controlHtml(p) {
 
   const skipSection = skipObjectsHtml(p);
 
+  // Fans: each slider sits next to that fan's reported speed, so a firmware
+  // that numbers its M106 P indices differently is immediately visible.
+  const fanRow = (name, label, liveKey, value) => `
+    <div class="space-y-1">
+      <div class="flex items-baseline justify-between gap-2">
+        <span class="text-[11px] font-bold t-body">${label}</span>
+        <span class="font-mono text-[10px] t-mut">reported:
+          <span data-live="${liveKey}" class="t-body">–</span></span>
+      </div>
+      <div class="flex items-center gap-3">
+        <input type="range" class="slider flex-1" min="0" max="100" step="5" value="${value}"
+               data-role="fan-slider-${name}" aria-label="${label} speed">
+        <span class="w-11 shrink-0 text-right font-mono text-[11px] font-bold t-strong"
+              data-role="fan-value-${name}">${value}%</span>
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        ${[0, 50, 100].map((v) => `<button class="btn btn-ghost" data-action="fan"
+          data-fan="${name}" data-speed="${v}">${v === 0 ? 'Off' : `${v}%`}</button>`).join('')}
+      </div>
+    </div>`;
+
+  const fanSection = `
+    ${fanRow('part', 'Part cooling fan', 'fan-part', p.fan || 0)}
+    <div class="h-px surface-3"></div>
+    ${fanRow('aux', 'Aux part fan', 'fan-aux', p.auxFan || 0)}
+    <div class="h-px surface-3"></div>
+    ${fanRow('chamber', 'Chamber fan', 'fan-chamber', p.chamberFan || 0)}
+    <p class="font-mono text-[10px] t-mut">
+      Sent as an M106 G-code line. The reported value is what the printer sends back — if it does
+      not follow the slider, your firmware numbers the fans differently.
+    </p>`;
+
   const calibration = `
     <div class="mb-2 flex items-center justify-between gap-2">
       <span data-live="homed" class="font-mono text-[10px] ${homed ? 't-accent' : 't-danger'}">
@@ -945,6 +981,8 @@ function controlHtml(p) {
 
 
       ${section('Lighting', lightSection, 'xl:col-span-2')}
+
+      ${section('Fans', fanSection, 'xl:col-span-2')}
 
       ${section('Skip object', skipSection)}
 
@@ -1626,6 +1664,17 @@ async function handleAction(printerId, el, entry) {
       if (menu) menu.removeAttribute('open');
       break;
     }
+    case 'fan': {
+      const fan = el.dataset.fan;
+      const speed = Number(el.dataset.speed);
+      const ok = await post(`/api/printers/${printerId}/fan`, { fan, speed });
+      if (ok) {
+        const p = printerById(printerId);
+        if (p) setFanLocally(p, fan, speed);
+        success(`${fan} fan set to ${speed}%`);
+      }
+      break;
+    }
     case 'rename-sd': {
       const current = el.dataset.name || '';
       const suggested = current.replace(/\.3mf$/i, '');
@@ -2060,6 +2109,12 @@ async function removePrinter(id) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+
+// The fan name maps onto the telemetry field the printer reports it in.
+function setFanLocally(printer, fan, speed) {
+  const key = fan === 'part' ? 'fan' : fan === 'aux' ? 'auxFan' : 'chamberFan';
+  printer[key] = speed;
+}
 
 // Re-render the Files panel after a view change (sort / filter / search).
 function refreshFileView(target) {
@@ -2623,6 +2678,10 @@ async function startPrintFromDialog() {
 /* ---------------------------------------------------------------- wiring */
 
 function wireStatic() {
+  // guard: wiring twice would attach every listener (and form handler) twice
+  if (wireStatic.done) return;
+  wireStatic.done = true;
+
   $('printer-select').addEventListener('change', (e) => selectPrinter(e.target.value));
   $('fleet-filter').addEventListener('input', (e) => { state.filter = e.target.value.trim(); renderFleet(); });
   $('add-printer').addEventListener('click', () => openModal());
@@ -2659,6 +2718,11 @@ function wireStatic() {
   document.addEventListener('input', (e) => {
     const role = e.target.dataset.role || '';
     if (role === 'files-search') { fileView.q = e.target.value; refreshFileView(e.target); return; }
+    if (role.startsWith('fan-slider-')) {
+      const out = document.querySelector(`[data-role="fan-value-${role.slice('fan-slider-'.length)}"]`);
+      if (out) out.textContent = `${e.target.value}%`;
+      return;
+    }
     const tile = e.target.closest('.tile');
     if (!tile) return;
     if (role.startsWith('slider-')) {
@@ -2678,6 +2742,19 @@ function wireStatic() {
     if (role === 'files-sort' || role === 'files-filter') {
       fileView.set(role === 'files-sort' ? 'sort' : 'filter', e.target.value);
       refreshFileView(e.target);
+      return;
+    }
+
+    // Fans: a slider fires 'change' on release, so this is one command per drag
+    if (role.startsWith('fan-slider-')) {
+      const card = e.target.closest('[data-card-id]');
+      const id = card && card.dataset.cardId;
+      if (!id) return;
+      const fan = role.slice('fan-slider-'.length);
+      const speed = Number(e.target.value);
+      const ok = await post(`/api/printers/${id}/fan`, { fan, speed });
+      const printer = printerById(id);
+      if (ok && printer) { setFanLocally(printer, fan, speed); scheduleRender(); }
       return;
     }
 

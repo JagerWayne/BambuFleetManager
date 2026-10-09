@@ -59,6 +59,53 @@ def test_skip_objects_coerces_ids():
     assert payload["obj_list"] == [2, 3]
 
 
+# ----------------------------------------------------------------------- fans
+
+
+def test_set_fan_is_a_gcode_line():
+    payload = build_command("set_fan", {"fan": "part", "speed": 50})["print"]
+    assert payload["command"] == "gcode_line"
+    assert payload["param"] == "M106 P0 S128\n"
+
+
+def test_set_fan_uses_the_x1_fan_indices():
+    assert build_command("set_fan", {"fan": "part", "speed": 100})["print"]["param"] == "M106 P0 S255\n"
+    assert build_command("set_fan", {"fan": "aux", "speed": 100})["print"]["param"] == "M106 P1 S255\n"
+    assert build_command("set_fan", {"fan": "chamber", "speed": 0})["print"]["param"] == "M106 P3 S0\n"
+
+
+def test_set_fan_percent_maps_onto_0_255():
+    def s(percent):
+        param = build_command("set_fan", {"fan": "part", "speed": percent})["print"]["param"]
+        return int(param.split("S")[1])
+
+    assert s(0) == 0
+    assert s(50) == 128
+    assert s(100) == 255
+
+
+def test_set_fan_clamps_out_of_range_speeds():
+    high = build_command("set_fan", {"fan": "part", "speed": 999})["print"]["param"]
+    low = build_command("set_fan", {"fan": "part", "speed": -5})["print"]["param"]
+    assert high == "M106 P0 S255\n"
+    assert low == "M106 P0 S0\n"
+
+
+def test_set_fan_defaults_to_the_part_fan():
+    assert build_command("set_fan", {})["print"]["param"] == "M106 P0 S0\n"
+
+
+def test_set_fan_rejects_an_unknown_fan():
+    with pytest.raises(ValueError):
+        build_command("set_fan", {"fan": "turbo", "speed": 50})
+
+
+def test_set_fan_is_registered_and_safe():
+    # moves no axes and heats nothing, so there is no confirmation gate
+    assert "set_fan" in available_commands()
+    assert risk_class("set_fan") == "safe"
+
+
 def test_ams_feed_and_unload_targets():
     assert build_command("ams_feed")["print"]["target"] == 1
     assert build_command("ams_unload")["print"]["target"] == 2

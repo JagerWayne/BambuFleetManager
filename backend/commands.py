@@ -344,6 +344,39 @@ def build_extrude(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# fans (M106)
+# --------------------------------------------------------------------------
+
+#: Fan name -> M106 ``P`` index, for the X1 family this app targets. The
+#: indices follow the firmware's fan order (part cooling first, then the aux
+#: part fan, then the chamber fan). This is per-model: a P1/A1 series machine
+#: numbers them differently, so the UI shows each fan's reported speed next to
+#: its control - if moving one changes the wrong readout, this table is wrong
+#: for that firmware.
+FAN_INDICES: Dict[str, int] = {
+    "part": 0,
+    "aux": 1,
+    "chamber": 3,
+}
+
+FANS = tuple(FAN_INDICES)
+
+
+def build_set_fan(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Set one fan's speed with an M106 G-code line.
+
+    ``speed`` is a percentage (0-100) so the UI can share the temperature
+    slider's range; M106 itself takes 0-255.
+    """
+    fan = str(params.get("fan", "part")).lower()
+    if fan not in FAN_INDICES:
+        raise ValueError(f"unknown fan '{params.get('fan')}'")
+    percent = max(0, min(100, int(params.get("speed", 0))))
+    value = round(percent * 255 / 100)
+    return _gcode(f"M106 P{FAN_INDICES[fan]} S{value}\n")
+
+
+# --------------------------------------------------------------------------
 # lookup tables
 # --------------------------------------------------------------------------
 
@@ -379,6 +412,8 @@ COMMANDS: Dict[str, tuple] = {
     "home": ("print", build_home),
     "jog": ("print", build_jog),
     "extrude": ("print", build_extrude),
+    # fans - moves nothing and heats nothing, so this stays a `safe` command
+    "set_fan": ("print", build_set_fan),
     # ams
     "ams_feed": ("print", _print_cmd("ams_change_filament", target=1)),
     "ams_unload": ("print", _print_cmd("ams_change_filament", target=2)),
