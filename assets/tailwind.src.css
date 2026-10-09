@@ -108,7 +108,6 @@
   --dur-slow: 320ms;
   --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
   --tap-min: 44px;
-  --shell-max: 1440px;
   --topbar-h: 61px;
   --bottombar-h: 68px;
 }
@@ -234,8 +233,6 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   flex-direction: column;
   min-height: 100dvh;
   width: 100%;
-  max-width: var(--shell-max);
-  margin-inline: auto;
 }
 
 /* --- top bar ---------------------------------------------------------- */
@@ -667,19 +664,9 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   overscroll-behavior: contain;
 }
 
-/* one row per staged file: name, a Print action for touch, the drag hint for a
-   mouse, and remove */
-.staged-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 0.4rem 0.5rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--line);
-  background: var(--surface-2);
-  cursor: grab;
-}
-.staged-row:active { cursor: grabbing; }
+/* one row per staged file, styled like a Files-tab row */
+.file-row[draggable="true"] { cursor: grab; }
+.file-row[draggable="true"]:active { cursor: grabbing; }
 
 /* there is no drag on a touch screen, so do not advertise it */
 @media (hover: none) {
@@ -1152,6 +1139,56 @@ input[type="range"].slider::-moz-range-thumb {
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
   background: var(--surface-2);
+}
+
+/* --- filament mapping (print dialog) ---------------------------------- */
+
+/* One row per filament: swatch + identity, then a full-width native picker.
+   A native select is the touch-friendly control here: on a phone it opens the
+   OS picker rather than a cramped row of chips. */
+.filament-map {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+
+.filament-map-swatch {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.filament-map-text { flex: 1 1 8rem; min-width: 0; }
+
+.filament-map-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.filament-map-sub {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-mut);
+}
+
+/* its own line, so the tap target spans the row */
+.filament-map-select {
+  flex: 1 1 100%;
+  min-height: var(--tap-min);
 }
 
 /* --- file browser ----------------------------------------------------- */

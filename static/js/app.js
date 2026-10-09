@@ -2046,13 +2046,19 @@ function renderStaged() {
     return;
   }
   box.innerHTML = state.staged.map((fn) => `
-    <div draggable="true" data-file="${escapeHtml(fn)}" class="staged-row">
-      <span class="min-w-0 flex-1 truncate font-mono text-[11px] t-strong">${escapeHtml(fn)}</span>
-      <button class="btn btn-primary shrink-0" data-action="print-staged"
-              data-file="${escapeHtml(fn)}">Print…</button>
-      <span class="drag-hint shrink-0 font-mono text-[10px] font-bold t-accent">DRAG →</span>
-      <button data-remove="${escapeHtml(fn)}" class="shrink-0 t-mut hover:t-danger"
-              title="Remove from staging">✕</button>
+    <div class="file-row" draggable="true" data-file="${escapeHtml(fn)}">
+      <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg border line-soft surface-3 t-mut"
+            aria-hidden="true">▤</span>
+      <span class="min-w-0 flex-1">
+        <span class="block truncate font-mono text-[12px] t-body">${escapeHtml(fn)}</span>
+        <span class="block truncate font-mono text-[10px] t-mut">staged on this server</span>
+      </span>
+      <div class="file-actions">
+        <button class="btn btn-primary" data-action="print-staged" data-file="${escapeHtml(fn)}">Print…</button>
+        <span class="drag-hint font-mono text-[10px] font-bold t-accent">DRAG →</span>
+        <button class="btn btn-ghost" data-remove="${escapeHtml(fn)}"
+                title="Remove from staging">✕</button>
+      </div>
     </div>`).join('');
 }
 
@@ -2615,41 +2621,32 @@ function renderPrintDialog() {
     <div class="flex justify-between"><span class="t-mut">Est. time</span><span>${mins ? mins + ' min' : '—'}</span></div>
     <div class="flex justify-between"><span class="t-mut">Filament</span><span>${info.weight_g ? info.weight_g.toFixed(1) + ' g' : '—'}</span></div>`;
 
-  // filaments + mapping (colour chips, auto-mapped to the closest tray)
+  // filaments + mapping: one row per filament with a native picker. A native
+  // <select> is the most touch-friendly control there is - on a phone it opens
+  // the OS picker, which is large, scrollable and accessible.
   const options = trayOptions();
   const filaments = info.filaments || [];
   $('print-filaments').innerHTML = filaments.length ? filaments.map((f) => {
     const chosen = state.print.mapping[f.id] !== undefined ? state.print.mapping[f.id] : autoMapFilament(f);
     state.print.mapping[f.id] = chosen;
-    const chips = options.map((o) => `
-      <button class="btn ${o.value === chosen ? 'btn-primary' : 'btn-ghost'}"
-              data-map-filament="${f.id}" data-map-index="${o.value}" title="${escapeHtml(o.label)}">
-        <span class="h-3 w-3 shrink-0 rounded-full border line"
-              style="background:${o.color ? escapeHtml(o.color) : 'transparent'}"></span>
-        ${escapeHtml(o.short)}
-      </button>`).join('');
+    const auto = autoMapFilament(f);
+    const opts = options.map((o) => {
+      const mark = o.value === auto && o.value !== -1 ? ' (best match)' : '';
+      return `<option value="${o.value}"${o.value === chosen ? ' selected' : ''}>${
+        escapeHtml(o.label)}${mark}</option>`;
+    }).join('');
     return `
-      <div class="tile p-2">
-        <div class="flex items-center gap-2">
-          <span class="h-7 w-7 shrink-0 rounded-lg border line"
-                style="background:#${escapeHtml(f.color || '888888')}"></span>
-          <span class="min-w-0 flex-1">
-            <span class="block truncate font-mono text-[12px] font-bold t-strong">
-              ${escapeHtml(f.type || 'filament')} #${escapeHtml(String(f.id || 1))}</span>
-            <span class="block font-mono text-[10px] t-mut">
-              #${escapeHtml(f.color || '------')}${f.used_g ? ' · ' + f.used_g.toFixed(1) + ' g' : ''}</span>
-          </span>
-        </div>
-        <div class="mt-2 flex flex-wrap gap-1.5">${chips}</div>
-      </div>`;
+      <label class="filament-map">
+        <span class="filament-map-swatch" style="background:#${escapeHtml(f.color || '888888')}"></span>
+        <span class="filament-map-text">
+          <span class="filament-map-title">${escapeHtml(f.type || 'filament')} #${escapeHtml(String(f.id || 1))}</span>
+          <span class="filament-map-sub">#${escapeHtml(f.color || '------')}${
+            f.used_g ? ' · ' + f.used_g.toFixed(1) + ' g' : ''}</span>
+        </span>
+        <select class="field filament-map-select" data-role="map-filament" data-filament="${f.id}"
+                aria-label="Tray for ${escapeHtml(f.type || 'filament')} ${escapeHtml(String(f.id || 1))}">${opts}</select>
+      </label>`;
   }).join('') : '<p class="font-mono text-[10px] t-mut">No filament information in this project.</p>';
-
-  $('print-filaments').querySelectorAll('[data-map-filament]').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      state.print.mapping[Number(chip.dataset.mapFilament)] = Number(chip.dataset.mapIndex);
-      renderPrintDialog();
-    });
-  });
 
   // options
   $('print-options').innerHTML = `
@@ -2787,6 +2784,13 @@ function wireStatic() {
     if (role === 'files-sort' || role === 'files-filter') {
       fileView.set(role === 'files-sort' ? 'sort' : 'filter', e.target.value);
       refreshFileView(e.target);
+      return;
+    }
+
+    // Filament mapping pickers in the print dialog
+    if (role === 'map-filament') {
+      const id = Number(e.target.dataset.filament);
+      if (state.print) state.print.mapping[id] = Number(e.target.value);
       return;
     }
 

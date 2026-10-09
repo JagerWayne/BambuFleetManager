@@ -28,7 +28,9 @@ const calls = [];
 window.fetch = (url, opts = {}) => {
   calls.push({ url, method: (opts.method || 'GET').toUpperCase(), body: opts.body });
   let payload = {};
-  if (url.includes('/files/plan')) payload = { path: '/004.gcode.3mf', name: '004.gcode.3mf', trays: [], external: null,
+  if (url.includes('/files/plan')) payload = { path: '/004.gcode.3mf', name: '004.gcode.3mf',
+    trays: [{ index: 2, ams_id: 0, tray_id: 0, type: 'PLA', color: 'FF0000' }],
+    external: { type: 'PETG', color: '00FF00' },
     plates: [{ index: 4, time_sec: 600, weight_g: 12.5, filaments: [{ id: 1, type: 'PLA', color: '000000', used_g: 12.5 }] }] };
   else if (url.includes('/files/rename')) payload = { status: 'renamed', path: '/renamed.3mf', name: 'renamed.3mf' };
   else if (url.includes('/files')) payload = { path: '/', parent: null, entries: ENTRIES };
@@ -213,6 +215,25 @@ function telemetry(data) {
   await new Promise((r) => setTimeout(r, 60));
   check('plan requested', calls.some((c) => c.url.includes('/files/plan')));
   check('print dialog opened', !doc.getElementById('modal-print').classList.contains('hidden'));
+
+  /* --- filament mapping: one native picker per filament ----------------- */
+  const picks = doc.querySelectorAll('#print-filaments [data-role="map-filament"]');
+  check('a picker per filament', picks.length >= 1, String(picks.length));
+  check('the picker lists the trays and the external spool', picks[0] && picks[0].options.length === 3,
+    picks[0] && [...picks[0].options].map((o) => o.textContent).join(' | '));
+  check('the auto-mapped tray is preselected', picks[0] && picks[0].value === '2', picks[0] && picks[0].value);
+  check('the best match is marked', picks[0] && picks[0].options[1].textContent.includes('best match'),
+    picks[0] && picks[0].options[1].textContent);
+
+  // choosing a different tray must reach the print request
+  picks[0].value = '255';                       // the external spool
+  picks[0].dispatchEvent(new window.Event('change', { bubbles: true }));
+  calls.length = 0;
+  doc.getElementById('print-start').click();
+  await new Promise((r) => setTimeout(r, 40));
+  const start = calls.find((c) => c.url.includes('/print-remote'));
+  check('the chosen mapping is sent', Boolean(start) && JSON.parse(start.body).ams_mapping[0] === 255,
+    start && start.body);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

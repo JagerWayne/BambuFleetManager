@@ -45,7 +45,7 @@ const doc = window.document;
   const panel = card.querySelector('[data-r="panel"]');
   check('staging tab renders', panel.textContent.includes('Staging queue'));
 
-  const row = panel.querySelector('.staged-row');
+  const row = panel.querySelector('.file-row');
   check('the staged file has a row', Boolean(row), panel.textContent.trim().slice(0, 60));
   check('the row names the file', row.textContent.includes('part.3mf'));
 
