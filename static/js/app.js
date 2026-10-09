@@ -44,57 +44,9 @@ let renderQueued = false;
 
 const $ = (id) => document.getElementById(id);
 
-const escapeHtml = (v) => String(v == null ? '' : v)
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-const num = (v, fallback = 0) => (typeof v === 'number' && isFinite(v) ? v : fallback);
-
-// The last path segment. We often hold a full SD path while the printer
-// reports a bare subtask_name, so job matching strips folders first.
-function baseName(p) {
-  const parts = String(p == null ? '' : p).split(/[\\/]/);
-  return parts[parts.length - 1] || '';
-}
-
-/* Speed profile levels, as the firmware numbers them (verified on an X1C). */
-const SPEED_LABELS = { 1: 'Silent', 2: 'Standard', 3: 'Sport', 4: 'Ludicrous' };
-const SPEED_SHORT = { 1: 'S', 2: 'N', 3: 'Sp', 4: 'L' };
-const SPEED_PERCENT = { 1: 50, 2: 100, 3: 124, 4: 166 };
-
-function speedLabel(printer) {
-  const level = printer.speedLevel;
-  if (!level || !SPEED_LABELS[level]) return '';
-  return `${SPEED_LABELS[level]} ${SPEED_PERCENT[level]}%`;
-}
-
-function formatDuration(seconds) {
-  const total = Math.max(0, Math.round(seconds || 0));
-  const d = Math.floor(total / 86400);
-  const h = Math.floor((total % 86400) / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
-  return `${m}m`;
-}
-
-function formatBytes(bytes) {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return `${n} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = n / 1024;
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[i]}`;
-}
-
-function formatDate(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return '';
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
-    d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
+// escapeHtml, num, baseName, the SPEED_* tables, speedLabel, formatDuration,
+// formatBytes, formatDate and printableJob are pure and live in
+// static/js/lib/util.js (loaded just above this file).
 
 function printerById(id) { return state.fleet.find((p) => p.id === id); }
 
@@ -1232,13 +1184,9 @@ function motionConfirmed(el) {
 }
 
 // A job we can re-open in the print preview: a real file name, not the
-// printer's "None" placeholder and one of the printable extensions.
-function printableJob(job) {
-  return Boolean(job) && job !== 'None' && /\.(3mf|gcode)$/i.test(baseName(job));
-}
-
-// The job we would reprint: what the printer reports, or - when a late FINISH
-// report dropped subtask_name to 'None' - the file we last sent to this
+// The job we would reprint: what the printer reports (and isn't the
+// printer's "None" placeholder with a printable extension), or - when a late
+// FINISH report dropped subtask_name to 'None' - the file we last sent to this
 // printer (remembered by startPrintFromDialog / staged printing).
 function lastPrintableJob(printer) {
   if (!printer) return null;

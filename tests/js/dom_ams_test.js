@@ -3,6 +3,7 @@ const fs = require('fs');
 const { JSDOM } = require('jsdom');
 
 const html = fs.readFileSync('templates/index.html', 'utf8');
+const utilJs = fs.readFileSync('static/js/lib/util.js', 'utf8');
 const appJs = fs.readFileSync('static/js/app.js', 'utf8');
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true });
 const { window } = dom;
@@ -42,6 +43,7 @@ window.fetch = (url, opts = {}) => {
   };
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload), text: () => Promise.resolve('1.11.0') });
 };
+window.eval(utilJs);
 window.eval(appJs);
 
 let pass = 0, fail = 0;

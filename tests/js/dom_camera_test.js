@@ -13,6 +13,7 @@ const fs = require('fs');
 const { JSDOM } = require('jsdom');
 
 const html = fs.readFileSync('templates/index.html', 'utf8');
+const utilJs = fs.readFileSync('static/js/lib/util.js', 'utf8');
 const appJs = fs.readFileSync('static/js/app.js', 'utf8');
 
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
@@ -49,6 +50,7 @@ Object.defineProperty(window.document, 'fullscreenElement', {
 
 const tick = () => new Promise((r) => setTimeout(r, 25));
 window.CAMERA_FIRST_FRAME_MS = 60;   // do not wait 12s in the suite
+window.eval(utilJs);
 window.eval(appJs);
 
 let pass = 0, fail = 0;
