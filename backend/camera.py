@@ -92,7 +92,12 @@ def _ffmpeg_input(ip: str, access_code: str, port: int = RTSP_PORT) -> list:
         # or already serving another client: without this the reader thread
         # stays blocked on a pipe that never produces a byte, the stream never
         # tears down, and the browser just sits on a blank frame. Microseconds.
-        "-rw_timeout", "10000000",
+        #
+        # This must be the RTSP/TCP `-timeout`, not the generic AVIO
+        # `-rw_timeout`: the bundled imageio-ffmpeg 7.1 build rejects the latter
+        # outright ("Option rw_timeout not found"), which aborted every camera
+        # stream and snapshot before it could connect.
+        "-timeout", "10000000",
         "-fflags", "nobuffer",
         "-flags", "low_delay",
         "-i", rtsp_url(ip, access_code, port),
