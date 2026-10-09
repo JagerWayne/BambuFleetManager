@@ -26,8 +26,10 @@ const state = {
   // pending skip selection + the printer/path/plate the skip modal is editing
   skipSelection: new Set(),
   skipCtx: null,
-  // Pre-armed skips: printerId -> { job, ids }. In-memory only, never
-  // persisted, and applied once the matching job starts printing.
+  // Pre-armed skips: printerId -> { job, ids, seenRunning }. Mirrored to
+  // localStorage ('bfm-preskip') so a dashboard reload - an app update, a
+  // refresh - does not silently discard an arm, and applied once the matching
+  // job starts printing.
   preSkip: {},
   trayPicker: null,
   filament: null,
@@ -161,12 +163,32 @@ async function sendCommand(printerId, command, params = {}, confirm = false) {
 // printer leaves the running/paused states, so a previous print's skips cannot
 // bleed into the next.
 //
-// A pre-armed skip is only dropped once it can no longer apply: the armed job
-// itself reached a terminal state, or the printer is actively running a
-// different, *named* job. An empty / 'None' subtask_name is "unknown", not a
-// different job - during idle -> prepare the printer's name is transiently
-// blank, and treating that as a change deleted the arm at the exact moment it
-// was supposed to fire.
+// A pre-armed skip must survive the printer's CURRENT terminal state: arming
+// while the printer sits in FINISH reporting the file you are about to re-run
+// is the normal pre-print case, and that FINISH says nothing about the run the
+// arm targets. The arm therefore only dies when it can no longer apply:
+//  - the armed job actually RAN (arm.seenRunning) and has now ended again
+//    without the arm firing - too late; or
+//  - the printer is actively running a different, *named* job.
+// An empty / 'None' subtask_name is "unknown", not a different job - during
+// idle -> prepare the printer's name is transiently blank, and treating that as
+// a change deleted the arm at the exact moment it was supposed to fire.
+
+// localStorage mirror of state.preSkip. Kept in lockstep on every change
+// (arm / consume / clear) and loaded on boot.
+function savePreSkip() {
+  try { localStorage.setItem('bfm-preskip', JSON.stringify(state.preSkip)); } catch (_) { /* private mode */ }
+}
+
+function loadPreSkip() {
+  try {
+    const raw = localStorage.getItem('bfm-preskip');
+    if (!raw) return;
+    const stored = JSON.parse(raw);
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) state.preSkip = stored;
+  } catch (_) { /* corrupt mirror: start from the empty in-memory map */ }
+}
+
 function clearSkipState(printer, t) {
   const job = t.subtask_name !== undefined ? (t.subtask_name || 'None') : printer.job;
   const changed = printer._skipJob !== undefined && printer._skipJob !== job;
@@ -179,9 +201,19 @@ function clearSkipState(printer, t) {
   const named = (n) => !!n && n !== 'None';
   const armedJob = baseName(arm.job);
   const currentJob = named(job) ? baseName(job) : null;
-  const armedEnded = named(job) && currentJob === armedJob && (st === 'finish' || st === 'failed');
-  const otherJob = st !== 'idle' && currentJob !== null && currentJob !== armedJob;
-  if (armedEnded || otherJob) delete state.preSkip[printer.id];
+  const active = st === 'running' || st === 'prepare' || st === 'paused';
+  // The armed job is actually being printed: only now does a later FINISH mean
+  // "that run happened and the arm never fired".
+  if (active && currentJob === armedJob && !arm.seenRunning) {
+    arm.seenRunning = true;
+    savePreSkip();
+  }
+  const consumed = Boolean(arm.seenRunning) && (st === 'finish' || st === 'failed');
+  const otherJob = active && currentJob !== null && currentJob !== armedJob;
+  if (consumed || otherJob) {
+    delete state.preSkip[printer.id];
+    savePreSkip();
+  }
 }
 
 function applyTelemetry(printer, t) {
@@ -287,16 +319,11 @@ async function applyPreSkip(printer) {
   const arm = state.preSkip[printer.id];
   if (!arm) return;
   const st = printer.status;
-  if (st !== 'running') {
-    // A stale arm never fires on a later, different job: anything still armed
-    // when the job ends (finish/failed) was never applied, so drop it.
-    if (st === 'finish' || st === 'failed') delete state.preSkip[printer.id];
-    return;
-  }
+  if (st !== 'running') return;  // lifetime (finish/failed/other job) is clearSkipState's job
   if (printer._preSkipSending) return;
   if (baseName(arm.job) !== baseName(printer.job)) return;
   const ids = Array.isArray(arm.ids) ? arm.ids : [];
-  if (!ids.length) { delete state.preSkip[printer.id]; return; }
+  if (!ids.length) { delete state.preSkip[printer.id]; savePreSkip(); return; }
 
   printer._preSkipSending = true;
   const ok = await post(`/api/printers/${printer.id}/skip-objects`, { object_ids: ids });
@@ -304,6 +331,7 @@ async function applyPreSkip(printer) {
   if (!ok) return;  // leave the arm in place for a retry
   printer.skippedIds = [...new Set([...(printer.skippedIds || []), ...ids])];
   delete state.preSkip[printer.id];
+  savePreSkip();
   toast(`Pre-armed skip sent for ${ids.length} object${ids.length === 1 ? '' : 's'}.`, 'ok');
   scheduleRender();
 }
@@ -1134,8 +1162,16 @@ async function confirmSkip() {
   const running = printer.status === 'running' || printer.status === 'paused';
   if (!running) {
     // Arm the selection; it is applied once the matching job starts printing.
+    // Snapshot whether the printer is mid-job right now: arming while it sits
+    // in FINISH/IDLE must survive that terminal state - only a run of the
+    // armed job itself (or a different running job) may end the arm.
+    const st = printer.status;
     const job = ctx.job || baseName(ctx.path) || printer.job;
-    state.preSkip[ctx.printerId] = { job, ids };
+    state.preSkip[ctx.printerId] = {
+      job, ids,
+      seenRunning: st === 'running' || st === 'paused' || st === 'prepare'
+    };
+    savePreSkip();
     toast(`Will skip ${ids.length} object${ids.length === 1 ? '' : 's'} when the print starts.`, 'ok');
     state.skipSelection = new Set();
     // The print dialog (if it is open for this project) now shows the armed count.
@@ -2270,7 +2306,7 @@ function consumePreSkip(printerId, jobName, applied) {
   const arm = state.preSkip[printerId];
   if (!arm) return;
   if (baseName(arm.job) !== baseName(jobName || '')) return;
-  if (applied) delete state.preSkip[printerId];
+  if (applied) { delete state.preSkip[printerId]; savePreSkip(); }
 }
 
 function markSkipped(printerId, ids) {
@@ -3309,6 +3345,7 @@ function wireStatic() {
 
 window.addEventListener('DOMContentLoaded', () => {
   wireStatic();
+  loadPreSkip();
   restoreSelection();
   fetch('/VERSION').then((r) => (r.ok ? r.text() : null))
     .then((v) => { if (v) $('app-version').textContent = v.trim(); })

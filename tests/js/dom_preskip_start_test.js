@@ -1,11 +1,17 @@
 /* DOM-level test of the pre-armed object skip lifecycle (jsdom).
  *
- * Two things are covered:
+ * Covered:
  *  1. the primary path - a selection armed while the printer is idle is sent
  *     WITH the print request (skip_object_ids) and the arm is then cleared;
  *  2. the fallback path - the arm survives the idle -> prepare transition
  *     (where subtask_name is transiently empty, the regression that used to
- *     delete it) and still fires for a print started outside the app. */
+ *     delete it) and still fires for a print started outside the app; and
+ *  3. arming while the printer sits in FINISH reporting the very file you want
+ *     to re-run - the normal pre-print case. The old clearSkipState() read that
+ *     FINISH as "the armed job already ended" and deleted the arm within one
+ *     tick, so Start went out with no ids and inject_pre_skip never saw any.
+ *     The arm is also mirrored to localStorage ('bfm-preskip') so a dashboard
+ *     reload keeps it. */
 const fs = require('fs');
 const { JSDOM } = require('jsdom');
 
@@ -159,6 +165,61 @@ const telemetry = (data) => window.__ws.onmessage({
   telemetry({ gcode_state: 'RUNNING', subtask_name: 'Other_plate_1.gcode.3mf' });
   await sleep(40);
   check('a different running job does not fire the arm', skipPosts().length === 1, String(skipPosts().length));
+
+  // ---- regression: armed while the printer sits in FINISH --------------
+  // The normal pre-print case: the printer just finished the file you are
+  // about to re-run with skips. The old logic deleted the arm on the next
+  // telemetry tick because status was FINISH with the same subtask_name.
+  window.printerById('n1').skippedIds = [];
+  telemetry({ gcode_state: 'FINISH', subtask_name: FILE });
+  await sleep(20);
+  window.openSkipModal('n1', { path: '/' + FILE, plate: 1 });
+  await sleep(30);
+  click(doc.querySelector('#skip-bed [data-skip-id="60"]'));
+  click(doc.querySelector('#skip-bed [data-skip-id="134"]'));
+  await sleep(10);
+  click(doc.getElementById('skip-confirm'));
+  await sleep(20);
+  check('arming while FINISH keeps the arm',
+    window.armedSkipIds('n1', FILE).length === 2, JSON.stringify(window.armedSkipIds('n1', FILE)));
+
+  // several more FINISH ticks (< 1 s apart in real life) must not wipe it
+  telemetry({ gcode_state: 'FINISH', subtask_name: FILE });
+  await sleep(20);
+  telemetry({ gcode_state: 'FINISH', subtask_name: FILE });
+  await sleep(20);
+  check('the arm survives repeated FINISH ticks',
+    window.armedSkipIds('n1', FILE).length === 2, JSON.stringify(window.armedSkipIds('n1', FILE)));
+
+  // the arm is mirrored to localStorage so a reload cannot lose it
+  let mirrored = false;
+  try {
+    const m = JSON.parse(window.localStorage.getItem('bfm-preskip') || '{}');
+    mirrored = Boolean(m.n1) && Array.isArray(m.n1.ids) && m.n1.ids.length === 2;
+  } catch (_) { mirrored = false; }
+  check('the arm is mirrored to localStorage (bfm-preskip)', mirrored,
+    String(window.localStorage.getItem('bfm-preskip')));
+
+  // Start now carries the ids
+  calls.length = 0;
+  window.openPrintDialog('n1', '/' + FILE);
+  await sleep(40);
+  click(doc.getElementById('print-start'));
+  await sleep(60);
+  const fp = printPosts();
+  let finishIds = null;
+  try { finishIds = fp.length ? JSON.parse(fp[0].body).skip_object_ids : null; } catch (_) { finishIds = null; }
+  check('Start from FINISH carries the armed ids in print-remote',
+    fp.length === 1 && Array.isArray(finishIds) && finishIds.length === 2
+      && finishIds.indexOf(60) >= 0 && finishIds.indexOf(134) >= 0, JSON.stringify(finishIds));
+  check('arming in FINISH sent no separate skip POST', skipPosts().length === 0, String(skipPosts().length));
+
+  // the RUNNING tick consumes the arm exactly once - nothing left to fire
+  telemetry({ gcode_state: 'RUNNING', subtask_name: FILE });
+  await sleep(50);
+  check('the RUNNING tick consumes the arm exactly once',
+    skipPosts().length === 0 && window.armedSkipIds('n1', FILE).length === 0,
+    JSON.stringify(window.armedSkipIds('n1', FILE)) + ' posts=' + skipPosts().length);
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

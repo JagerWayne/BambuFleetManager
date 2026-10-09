@@ -1159,6 +1159,12 @@ async def inject_pre_skip(printer_id: str, ids: Optional[List[int]]) -> List[int
     except Exception as exc:  # the print already started; never fail it here
         logger.warning("Could not publish the pre-armed skip for %s: %s", printer_id, exc)
         return []
+    logger.info(
+        "Applied pre-armed skip for %s (%s): object ids %s",
+        printer_id,
+        (latest_reports.get(printer_id) or {}).get("subtask_name", "?"),
+        wanted,
+    )
     return wanted
 
 
