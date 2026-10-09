@@ -43,6 +43,7 @@ from backend.paths import DATA_DIR, RESOURCE_DIR, ensure_data_dirs
 from backend import updater
 from backend.ftp_client import (
     delete_path,
+    rename_path,
     detect_plate_indices,
     read_remote_zip_entries,
     download_stream,
@@ -72,6 +73,7 @@ from backend.models import (
     PrinterConfig,
     PrinterPublic,
     RebootCommand,
+    RenameEntryCommand,
     ServerSettings,
     RemotePath,
     SkipObjectCommand,
@@ -1429,6 +1431,42 @@ async def delete_remote_file(printer_id: str, cmd: DeleteEntryCommand):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Delete failed: {exc}")
     return {"status": "deleted", "path": cmd.path}
+
+
+@app.post("/api/printers/{printer_id}/files/rename")
+async def rename_remote_file(printer_id: str, cmd: RenameEntryCommand):
+    """Rename a .3mf project on the SD card, in place.
+
+    Folders and non-project files cannot be renamed, the extension is pinned to
+    ``.3mf`` (a renamed project that lost its suffix would stop being printable
+    and would fall out of the Print files filter), and the name may not contain a
+    path, so a rename can never move a file into another folder.
+    """
+    printer = get_printer(printer_id)
+    source = normalize_remote_path(cmd.path)
+    name = cmd.new_name.strip()
+
+    if not source.lower().endswith(".3mf"):
+        raise HTTPException(status_code=400, detail="Only .3mf files can be renamed.")
+    if not name.lower().endswith(".3mf"):
+        raise HTTPException(status_code=400, detail="The new name must end in .3mf.")
+    if name in (".", "..") or "/" in name or "\\" in name:
+        raise HTTPException(status_code=400, detail="The new name must not contain a path.")
+
+    parent = posixpath.dirname(source) or "/"
+    target = posixpath.join(parent, name)
+    if target == source:
+        return {"status": "unchanged", "path": source, "name": name}
+
+    try:
+        new_path = await run_blocking(
+            rename_path, printer.ip, printer.access_code, source, name
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Rename failed: {exc}")
+    return {"status": "renamed", "path": new_path, "name": name}
 
 
 @app.get("/api/printers/{printer_id}/files/download")

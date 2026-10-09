@@ -425,9 +425,9 @@ function createCard(printer) {
   root.className = 'card card-enter flex flex-col overflow-hidden lg:h-[540px] 2xl:h-[600px]';
 
   root.innerHTML = `
-    <!-- identity first: on a phone the name and status read above the camera -->
-    <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b line px-3 py-2.5 sm:px-4">
-      <div class="min-w-0 basis-full sm:basis-auto sm:flex-1">
+    <!-- identity above the camera; the controls below are always shown -->
+    <div class="flex items-start justify-between gap-x-3 gap-y-2 border-b line px-3 py-2.5 sm:px-4">
+      <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span class="h-2 w-2 shrink-0 rounded-full" data-r="dot"></span>
           <h3 class="min-w-0 truncate text-[15px] font-bold t-strong" data-r="name"></h3>
@@ -435,10 +435,6 @@ function createCard(printer) {
           <span class="chip shrink-0 hidden" data-r="homing"></span>
         </div>
         <div class="mt-0.5 truncate font-mono text-[10px] t-mut" data-r="meta"></div>
-      </div>
-      <div class="ml-auto flex shrink-0 items-center gap-1.5">
-        <button class="icon-btn" data-act="panel" title="Show / hide controls">▾</button>
-        <button class="icon-btn" data-act="menu" title="Remove node">⋯</button>
       </div>
     </div>
 
@@ -524,7 +520,7 @@ function createCard(printer) {
     `<button class="tab" data-tab="${key}" aria-selected="false">${label}</button>`).join('');
 
   const entry = {
-    root, refs, tab: null, lastTab: 'control', jogStep: 1, camera: null,
+    root, refs, tab: 'control', jogStep: 1, camera: null,
     printerId: printer.id, inView: false,
     fileCache: { path: '/', listing: null, loading: false, error: null },
     camRefs: {
@@ -540,23 +536,13 @@ function createCard(printer) {
   };
 
   function selectTab(key) {
-    entry.tab = (entry.tab === key) ? null : key;
-    if (entry.tab) entry.lastTab = entry.tab;
+    entry.tab = key;  // controls are always shown, so a tab never collapses
     renderPanel(printerById(printer.id), entry, true);
   }
 
   refs.tabbar.addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]');
     if (b) selectTab(b.dataset.tab);
-  });
-
-  root.querySelector('[data-act="panel"]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    entry.tab = entry.tab ? null : (entry.lastTab || 'control');
-    renderPanel(printerById(printer.id), entry, true);
-  });
-  root.querySelector('[data-act="menu"]').addEventListener('click', (e) => {
-    e.stopPropagation(); removePrinter(printer.id);
   });
 
   // clicks inside the card (the summary column and the panel) are handled by
@@ -636,8 +622,6 @@ function updateCard(printer, entry) {
   refs.stage.textContent = (printer.layer && printer.totalLayers) ? `layer ${printer.layer}/${printer.totalLayers}` : '';
   refs.remaining.textContent = printing ? `~${formatDuration(printer.remainingSec)} left` : '';
 
-  entry.root.querySelector('[data-act="panel"]').textContent = entry.tab ? '▴' : '▾';
-
   if (entry.camRefs) {
     entry.camRefs.line1.textContent = `${printer.ip} · ${printer.sn}`;
     entry.camRefs.line2.textContent = (printer.ipcam && printer.ipcam.resolution)
@@ -688,16 +672,6 @@ function renderPanel(printer, entry, force = false) {
 
   entry.refs.tabbar.querySelectorAll('[data-tab]').forEach((b) =>
     b.setAttribute('aria-selected', String(b.dataset.tab === entry.tab)));
-
-  if (!entry.tab) {
-    if (body.dataset.built !== 'none') {
-      body.dataset.built = 'none';
-      body.innerHTML = `<div class="grid h-full place-items-center px-6 py-4 text-center font-mono text-[11px] t-dim">
-        Pick a tab above for controls, temperatures, SD card, AMS, system or staging.
-      </div>`;
-    }
-    return;
-  }
 
   if (entry.tab === 'staging') {
     body.dataset.built = 'staging';
@@ -1115,7 +1089,91 @@ function temperatureHtml(p) {
 
 /* --------------------------------------------------------------- SD files */
 
-function filesHtml(cache) {
+/* ------------------------------------------------------------ file browser */
+
+// Sort + filter are remembered per browser; the search box is per session.
+const fileView = (() => {
+  const read = (key, fallback) => {
+    try { return localStorage.getItem(`bfm-files-${key}`) || fallback; } catch (_) { return fallback; }
+  };
+  return {
+    sort: read('sort', 'name'),
+    dir: read('dir', 'asc'),
+    filter: read('filter', 'all'),
+    q: '',
+    set(key, value) {
+      this[key] = value;
+      try { localStorage.setItem(`bfm-files-${key}`, value); } catch (_) { /* ignore */ }
+    }
+  };
+})();
+
+// Folders Windows/printers create that should never be shown.
+const HIDDEN_SD_NAMES = new Set(['system volume information']);
+
+const is3mf = (name) => String(name).toLowerCase().endsWith('.3mf');
+const isMp4 = (name) => String(name).toLowerCase().endsWith('.mp4');
+
+function sortFiles(entries) {
+  const flip = fileView.dir === 'desc' ? -1 : 1;
+  return [...entries].sort((a, b) => {
+    // folders always lead, whatever the sort, so the tree stays navigable
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    let cmp;
+    if (fileView.sort === 'size') cmp = (a.size || 0) - (b.size || 0);
+    else if (fileView.sort === 'date') cmp = String(a.modified || '').localeCompare(String(b.modified || ''));
+    else cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    return cmp * flip;
+  });
+}
+
+function filterFiles(entries) {
+  const needle = fileView.q.trim().toLowerCase();
+  return sortFiles((entries || []).filter((f) => {
+    if (HIDDEN_SD_NAMES.has(String(f.name).toLowerCase())) return false;
+    if (needle && !String(f.name).toLowerCase().includes(needle)) return false;
+    if (fileView.filter === 'print') return !f.is_dir && is3mf(f.name);
+    if (fileView.filter === 'video') return !f.is_dir && isMp4(f.name);
+    return true;
+  }));
+}
+
+function folderTotals(entries) {
+  let files = 0, folders = 0, bytes = 0;
+  entries.forEach((f) => {
+    if (f.is_dir) folders += 1; else { files += 1; bytes += f.size || 0; }
+  });
+  return { files, folders, bytes };
+}
+
+// A row's actions: Print is the default for a project file, Get for anything
+// else, and the rest live behind the caret.
+function fileActions(f, printingBusy) {
+  const path = escapeHtml(f.path);
+  const primary = f.is_printable
+    ? `<button class="btn btn-primary" data-action="print-sd" data-path="${path}">Print</button>`
+    : `<button class="btn btn-ghost" data-action="download-sd" data-path="${path}">Get</button>`;
+
+  const items = [];
+  if (f.is_printable) items.push(`<button data-action="download-sd" data-path="${path}">Get a copy</button>`);
+  if (is3mf(f.name)) {
+    items.push(`<button data-action="rename-sd" data-path="${path}" data-name="${escapeHtml(f.name)}"
+      ${printingBusy ? 'disabled title="Stop the job before renaming"' : ''}>Rename</button>`);
+  }
+  items.push(`<button class="t-danger" data-action="delete-sd" data-path="${path}" data-dir="0"
+    ${printingBusy ? 'disabled title="Stop the job before deleting"' : ''}>Delete</button>`);
+
+  return `
+    <div class="file-actions">
+      ${primary}
+      <details class="file-menu">
+        <summary class="btn btn-ghost file-menu-toggle" title="More actions" aria-label="More actions">▾</summary>
+        <div class="file-menu-panel">${items.join('')}</div>
+      </details>
+    </div>`;
+}
+
+function filesHtml(cache, printer) {
   const parts = cache.path.split('/').filter(Boolean);
   let acc = '';
   const crumbs = [`<button class="hover:t-accent" data-action="cd" data-path="/">SD root</button>`];
@@ -1124,56 +1182,86 @@ function filesHtml(cache) {
     crumbs.push(`<span class="t-dim">/</span><button class="hover:t-accent" data-action="cd" data-path="${escapeHtml(acc)}">${escapeHtml(part)}</button>`);
   });
 
-  let body = '';
+  const row = (f) => {
+    const printing = !f.is_dir && printer && printer.job && String(f.name) === String(printer.job);
+    return `
+      <div class="file-row${f.is_dir ? ' is-dir' : ''}${printing ? ' is-printing' : ''}">
+        <button class="flex min-w-0 flex-1 items-center gap-2.5 text-left" data-action="cd"
+                data-path="${escapeHtml(f.path)}" data-dir="${f.is_dir ? 1 : 0}">
+          <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg border line-soft ${
+            f.is_dir ? 'bg-accent-soft t-accent' : 'surface-3 t-mut'}">
+            ${f.is_dir ? '▣' : isMp4(f.name) ? '▶' : '▤'}
+          </span>
+          <span class="min-w-0">
+            <span class="block truncate font-mono text-[12px] ${f.is_dir ? 'font-bold t-strong' : 't-body'}">${escapeHtml(f.name)}</span>
+            <span class="block truncate font-mono text-[10px] t-mut">
+              ${f.is_dir ? 'folder' : formatBytes(f.size)}${f.modified ? ' · ' + formatDate(f.modified) : ''}${
+                printing ? ' · <span class="t-accent">printing</span>' : ''}
+            </span>
+          </span>
+        </button>
+        ${f.is_dir ? '' : fileActions(f, printer && printer.status === 'running')}
+      </div>`;
+  };
+
+  let body;
   if (cache.loading) {
     body = `<p class="p-4 text-center font-mono text-[11px] t-mut">Reading SD card over FTPS…</p>`;
   } else if (cache.error) {
     body = `<p class="p-4 text-center font-mono text-[11px] t-danger">${escapeHtml(cache.error)}</p>`;
-  } else if (cache.listing && !cache.listing.length) {
+  } else if (!cache.listing) {
+    body = '';
+  } else if (!cache.listing.length) {
     body = `<p class="p-4 text-center font-mono text-[11px] t-mut">This folder is empty.</p>`;
-  } else if (cache.listing) {
-    body = cache.listing.map((f) => `
-      <div class="rounded-xl border line surface-2 p-2">
-        <div class="flex items-center gap-2">
-          <button class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                  data-action="cd" data-path="${escapeHtml(f.path)}" data-dir="${f.is_dir ? 1 : 0}">
-            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg border line-soft ${
-              f.is_dir ? 'bg-accent-soft t-accent' : 'surface-3 t-mut'}">
-              ${f.is_dir ? '▣' : '▤'}
-            </span>
-            <span class="min-w-0">
-              <span class="block truncate font-mono text-[12px] ${
-                f.is_dir ? 'font-bold t-strong' : 't-body'}">${escapeHtml(f.name)}</span>
-              <span class="block truncate font-mono text-[10px] t-mut">
-                ${f.is_dir ? 'folder' : formatBytes(f.size)}${f.modified ? ' · ' + formatDate(f.modified) : ''}
-              </span>
-            </span>
-          </button>
-          <div class="flex shrink-0 items-center gap-1">
-            ${f.is_printable ? `<button class="btn btn-primary" data-action="print-sd" data-path="${escapeHtml(f.path)}">Print</button>` : ''}
-            ${f.is_dir ? '' : `<button class="btn btn-ghost" data-action="download-sd" data-path="${escapeHtml(f.path)}" title="Download to this computer">Get</button>`}
-            <button class="btn btn-danger" data-action="delete-sd" data-path="${escapeHtml(f.path)}" data-dir="${f.is_dir ? 1 : 0}" title="Delete">Del</button>
-          </div>
-        </div>
-      </div>`).join('');
+  } else {
+    const shown = filterFiles(cache.listing);
+    const total = folderTotals(shown);
+    const filtered = fileView.filter !== 'all' || fileView.q.trim();
+    body = shown.length
+      ? shown.map(row).join('')
+      : `<p class="p-4 text-center font-mono text-[11px] t-mut">
+           Nothing here matches ${fileView.q.trim() ? 'that search' : 'this filter'}.
+         </p>`;
+    body += filtered
+      ? `<p class="px-1 pt-1 font-mono text-[10px] t-dim">showing ${total.files} of ${
+          folderTotals(cache.listing).files} file(s)</p>`
+      : '';
   }
 
-  const count = cache.listing ? cache.listing.length : 0;
+  const totals = cache.listing ? folderTotals(cache.listing) : null;
+  const options = (pairs, current) => pairs.map(([v, l]) =>
+    `<option value="${v}"${v === current ? ' selected' : ''}>${l}</option>`).join('');
 
   return `
-    <div class="flex flex-col gap-2">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex min-w-0 items-center gap-1 overflow-x-auto font-mono text-[11px] t-mut">${crumbs.join('')}</div>
-        <div class="flex shrink-0 items-center gap-1.5">
-          <label class="btn btn-ghost" title="Upload a project into this folder">
-            Upload
-            <input type="file" accept=".3mf,.gcode" class="hidden" data-role="folder-upload">
-          </label>
-          <button class="btn btn-ghost" data-action="refresh-files">Refresh</button>
-        </div>
+    <div class="file-browser">
+      <div class="file-toolbar">
+        ${cache.parent ? `<button class="btn btn-ghost shrink-0" data-action="cd" data-path="${escapeHtml(cache.parent)}"
+          title="Up one level">↑ Up</button>` : ''}
+        <div class="file-crumbs">${crumbs.join('')}</div>
       </div>
-      ${cache.listing ? `<p class="font-mono text-[10px] t-dim">${count} item${count === 1 ? '' : 's'}</p>` : ''}
-      <div class="max-h-[46vh] space-y-1.5 overflow-y-auto lg:max-h-[340px]" data-role="file-list">${body}</div>
+
+      <div class="file-controls">
+        <input type="search" class="field file-search" data-role="files-search"
+               placeholder="Search this folder…" value="${escapeHtml(fileView.q)}" aria-label="Search this folder">
+        <select class="field file-select" data-role="files-sort" aria-label="Sort by">
+          ${options([['name', 'Name'], ['date', 'Date'], ['size', 'Size']], fileView.sort)}
+        </select>
+        <button class="btn btn-ghost" data-action="files-dir"
+                title="Sort ${fileView.dir === 'asc' ? 'descending' : 'ascending'}">${fileView.dir === 'asc' ? '↑ A-Z' : '↓ Z-A'}</button>
+        <select class="field file-select" data-role="files-filter" aria-label="Filter">
+          ${options([['all', 'All files'], ['print', 'Print files (3MF)'], ['video', 'Video files (MP4)']], fileView.filter)}
+        </select>
+        <label class="btn btn-ghost" title="Upload a project into this folder">
+          Upload
+          <input type="file" accept=".3mf,.gcode" class="hidden" data-role="folder-upload">
+        </label>
+        <button class="btn btn-ghost" data-action="refresh-files">Refresh</button>
+      </div>
+
+      <p class="font-mono text-[10px] t-dim">
+        ${totals ? `${totals.folders} folder(s), ${totals.files} file(s) · ${formatBytes(totals.bytes)}` : ''}
+      </p>
+      <div class="file-list" data-role="file-list">${body}</div>
     </div>`;
 }
 
@@ -1501,6 +1589,10 @@ async function handleAction(printerId, el, entry) {
       break;
     }
     case 'refresh-files': loadFiles(printerId, entry.fileCache.path, true); break;
+    case 'files-dir':
+      fileView.set('dir', fileView.dir === 'asc' ? 'desc' : 'asc');
+      refreshFileView(el);
+      break;
     case 'cd':
       // Directory rows carry data-dir; breadcrumb buttons do not.
       if (el.dataset.dir === '1' || el.dataset.dir === undefined) loadFiles(printerId, el.dataset.path);
@@ -1521,6 +1613,53 @@ async function handleAction(printerId, el, entry) {
         toast('deleted');
         loadFiles(printerId, entry.fileCache.path, true);
       } catch (err) { toast(err.message, 'error'); }
+      break;
+    }
+    case 'rename-sd': {
+      const current = el.dataset.name || '';
+      const suggested = current.replace(/\.3mf$/i, '');
+      const typed = window.prompt(
+        `Rename "${current}"\n\nEnter a new name (the .3mf extension is kept):`, suggested);
+      if (typed === null) return;
+      let name = typed.trim();
+      if (!name) return;
+      if (!/\.3mf$/i.test(name)) name += '.3mf';
+      if (/[\\/]/.test(name)) { toast('A file name cannot contain a path', 'error'); return; }
+      try {
+        const r = await api(`/api/printers/${printerId}/files/rename`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: el.dataset.path, new_name: name })
+        });
+        toast(r.status === 'unchanged' ? 'name unchanged' : `renamed to ${r.name}`);
+        loadFiles(printerId, entry.fileCache.path, true);
+      } catch (err) { toast(err.message, 'error'); }
+      break;
+    }
+    case 'remove-node-start': {
+      const gate = el.closest('[data-role="remove-gate"]');
+      if (gate) gate.innerHTML = removeChallengeHtml();
+      break;
+    }
+    case 'remove-node-cancel': {
+      const challenge = el.closest('[data-role="remove-challenge"]');
+      const gate = challenge && challenge.parentElement;
+      if (gate) {
+        gate.innerHTML = `<button class="btn btn-danger w-full" data-action="remove-node-start"
+            >Remove this printer…</button>`;
+      }
+      break;
+    }
+    case 'remove-node-pick': {
+      const challenge = el.closest('[data-role="remove-challenge"]');
+      if (!challenge) return;
+      const target = Number(challenge.dataset.target);
+      if (Number(el.dataset.value) !== target) {
+        // wrong number: do not confirm, just re-roll the challenge
+        toast(`That was ${el.dataset.value}, not ${target}. Try again.`, 'error');
+        challenge.outerHTML = removeChallengeHtml();
+        return;
+      }
+      await removePrinter(printerId);
       break;
     }
     case 'ams': {
@@ -1611,6 +1750,39 @@ function systemHtml(p) {
         <input type="file" accept=".3mf,.gcode" data-role="sd-upload"
                class="w-full font-mono text-[11px] t-mut file:mr-2 file:rounded-lg file:border-0 file:surface-3 file:px-2.5 file:py-1.5 file:font-mono file:text-[11px] file:t-accent">
       </div>
+      <div>
+        <p class="mb-1.5 text-[10px] uppercase tracking-wider t-danger">Danger zone</p>
+        <div data-role="remove-gate">
+          <button class="btn btn-danger w-full" data-action="remove-node-start">Remove this printer…</button>
+          <p class="mt-1.5 font-mono text-[10px] t-mut">
+            Forgets this node and its access code. The printer itself is untouched.
+          </p>
+        </div>
+      </div>
+    </div>`;
+}
+
+// Three numbers, one of which the user must tap to prove intent - the same
+// shape as reading a code off an authenticator app, and hard to dismiss by
+// reflex the way a plain "are you sure?" dialog can be. This is a guard against
+// misclicks, not a security control.
+function removeChallengeHtml() {
+  const pick = () => 1 + Math.floor(Math.random() * 99);
+  const target = pick();
+  const options = new Set([target]);
+  while (options.size < 3) options.add(pick());
+  const shuffled = [...options].sort(() => Math.random() - 0.5);
+
+  return `
+    <div data-role="remove-challenge" data-target="${target}" class="space-y-2">
+      <p class="font-mono text-[11px] t-body">
+        Tap <span class="text-base font-bold t-danger">${target}</span> to confirm.
+      </p>
+      <div class="grid grid-cols-3 gap-2">
+        ${shuffled.map((n) => `<button class="btn btn-ghost" data-action="remove-node-pick"
+          data-value="${n}">${n}</button>`).join('')}
+      </div>
+      <button class="btn btn-ghost w-full" data-action="remove-node-cancel">Cancel</button>
     </div>`;
 }
 
@@ -1621,10 +1793,12 @@ async function renderFiles(printer, body) {
   if (!entry) return;
   const cache = entry.fileCache;
   const sig = `files:${cache.path}:${cache.loading}:${cache.error || ''}:` +
+    `${fileView.sort}:${fileView.dir}:${fileView.filter}:${fileView.q}:` +
+    `${printer.status}:${printer.job || ''}:` +
     (cache.listing || []).map((f) => `${f.path}:${f.size}`).join('|');
   if (body.dataset.sig === sig) return;
   body.dataset.sig = sig;
-  body.innerHTML = filesHtml(cache);
+  body.innerHTML = filesHtml(cache, printer);
   if (!cache.listing && !cache.loading && !cache.error) loadFiles(printer.id, cache.path);
 }
 
@@ -1644,6 +1818,7 @@ async function loadFiles(printerId, path, force = false) {
   try {
     const data = await api(`/api/printers/${printerId}/files?path=${encodeURIComponent(path)}`);
     cache.listing = data.entries;
+    cache.parent = data.parent;   // drives the "up one level" button
   } catch (err) {
     cache.error = err.message;
     cache.listing = null;
@@ -1862,15 +2037,35 @@ async function savePrinter(event) {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// The number challenge in the System tab is the confirmation, so there is no
+// second browser dialog here.
 async function removePrinter(id) {
-  const printer = printerById(id);
-  if (!window.confirm(`Remove ${printer ? printer.name : 'this node'} from the fleet?`)) return;
   try {
     await api(`/api/printers/${id}`, { method: 'DELETE' });
     state.fleet = state.fleet.filter((p) => p.id !== id);
+    if (state.selectedId === id) state.selectedId = null;  // renderFleet picks the next one
     toast('node removed');
     scheduleRender();
   } catch (err) { toast(err.message, 'error'); }
+}
+
+
+// Re-render the Files panel after a view change (sort / filter / search).
+function refreshFileView(target) {
+  const card = target.closest && target.closest('[data-card-id]');
+  if (!card) return;
+  const entry = cards.get(card.dataset.cardId);
+  if (!entry || entry.tab !== 'files' || !entry.refs.panel) return;
+  entry.refs.panel.dataset.sig = '';
+  renderFiles(printerById(card.dataset.cardId), entry.refs.panel);
+}
+
+
+// Close any open per-file menu when the click lands elsewhere.
+function closeFileMenus(except) {
+  document.querySelectorAll('details.file-menu[open]').forEach((d) => {
+    if (!except || !d.contains(except)) d.removeAttribute('open');
+  });
 }
 
 
@@ -2444,9 +2639,13 @@ function wireStatic() {
   $('modal-cancel').addEventListener('click', closeModal);
   $('printer-form').addEventListener('submit', savePrinter);
 
+  // one open per-file menu at a time, and any outside click closes them
+  document.addEventListener('click', (e) => closeFileMenus(e.target), true);
+
   // temperature sliders keep their number inputs in sync (delegated)
   document.addEventListener('input', (e) => {
     const role = e.target.dataset.role || '';
+    if (role === 'files-search') { fileView.q = e.target.value; refreshFileView(e.target); return; }
     const tile = e.target.closest('.tile');
     if (!tile) return;
     if (role.startsWith('slider-')) {
@@ -2461,6 +2660,14 @@ function wireStatic() {
   // SD upload from the system tab
   document.addEventListener('change', async (e) => {
     const role = e.target.dataset.role;
+
+    // Files tab: sort + type filter
+    if (role === 'files-sort' || role === 'files-filter') {
+      fileView.set(role === 'files-sort' ? 'sort' : 'filter', e.target.value);
+      refreshFileView(e.target);
+      return;
+    }
+
     if ((role !== 'sd-upload' && role !== 'folder-upload') || !e.target.files.length) return;
     const card = e.target.closest('[data-card-id]');
     if (!card) return;

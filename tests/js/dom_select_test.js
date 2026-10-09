@@ -82,8 +82,9 @@ const mounted = () => [...window.document.querySelectorAll('[data-card-id]')].ma
   check('no card pencil (edit)', !card.querySelector('[data-act="edit"]'));
   check('no card bulb (light)', !card.querySelector('[data-act="light"]'));
   check('no camera restart button', !card.querySelector('[data-action="cam-restart"]'));
-  check('panel + remove buttons kept', Boolean(card.querySelector('[data-act="panel"]'))
-    && Boolean(card.querySelector('[data-act="menu"]')));
+  check('panel toggle removed (controls always shown)', !card.querySelector('[data-act="panel"]'));
+  check('remove-node button removed from the header', !card.querySelector('[data-act="menu"]'));
+  check('controls render immediately, no placeholder', !card.querySelector('[data-r="panel"]').textContent.includes('Pick a tab'));
 
   // and the state-dump duplicate is gone from the System tab, kept in Calibration
   const tabs = [...card.querySelectorAll('[data-tab]')].map((b) => b.dataset.tab);

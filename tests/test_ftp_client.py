@@ -69,6 +69,16 @@ class FakeFTPS:
         FakeFTPS.tree.setdefault(parent or "/", []).remove(name)
         FakeFTPS.tree.pop(path, None)
 
+    def rename(self, src, dst):
+        self.calls.append(("rename", src, dst))
+        parent, _, name = src.rpartition("/")
+        parent = parent or "/"
+        if name not in FakeFTPS.tree.get(parent, []):
+            raise RuntimeError("550 No such file")
+        FakeFTPS.tree[parent].remove(name)
+        new_parent, _, new_name = dst.rpartition("/")
+        FakeFTPS.tree.setdefault(new_parent or "/", []).append(new_name)
+
     def storbinary(self, cmd, fp):
         self.calls.append(("storbinary", cmd))
         parent, _, name = cmd[5:].rpartition("/")
@@ -151,6 +161,31 @@ def test_delete_directory():
 def test_delete_root_is_refused():
     with pytest.raises(ValueError):
         ftp_client.delete_path("10.0.0.5", "12345678", "/", is_dir=True)
+
+
+def test_rename_keeps_the_file_in_its_folder():
+    new_path = ftp_client.rename_path("10.0.0.5", "12345678", "/apps/notes.txt", "memo.txt")
+    assert new_path == "/apps/memo.txt"
+    assert [e.name for e in ftp_client.list_directory("10.0.0.5", "12345678", "/apps")] == ["memo.txt"]
+
+
+def test_rename_returns_the_new_path_and_reports_the_call():
+    FakeFTPS.last = None
+    path = ftp_client.rename_path("10.0.0.5", "12345678", "/benchy.3mf", "desk-organizer.3mf")
+    assert path == "/desk-organizer.3mf"
+    assert ("rename", "/benchy.3mf", "/desk-organizer.3mf") in FakeFTPS.last.calls
+
+
+def test_rename_refuses_a_name_that_escapes_the_folder():
+    with pytest.raises(ValueError):
+        ftp_client.rename_path("10.0.0.5", "12345678", "/benchy.3mf", "../escaped.3mf")
+    # the file is still where it was
+    assert "benchy.3mf" in FakeFTPS.tree["/"]
+
+
+def test_rename_root_is_refused():
+    with pytest.raises(ValueError):
+        ftp_client.rename_path("10.0.0.5", "12345678", "/", "nope.3mf")
 
 
 def test_upload_into_subdirectory(tmp_path):

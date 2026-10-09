@@ -309,6 +309,28 @@ def delete_path(ip: str, access_code: str, path: str, is_dir: bool = False) -> b
     return True
 
 
+def rename_path(ip: str, access_code: str, path: str, new_name: str) -> str:
+    """Rename a file in place and return the new path.
+
+    Only the basename changes - the file stays in its folder. Validation (the
+    ``.3mf`` extension, no separators) belongs to the caller, but the folder is
+    re-derived here so a crafted name can never move a file elsewhere.
+    """
+    source = normalize_remote_path(path)
+    if source == "/":
+        raise ValueError("refusing to rename the SD card root")
+    if not new_name or new_name in (".", "..") or "/" in new_name or "\\" in new_name:
+        raise ValueError("the new name must not contain a path")
+    parent = posixpath.dirname(source) or "/"
+    target = normalize_remote_path(posixpath.join(parent, new_name))
+    if posixpath.dirname(target) != parent:
+        raise ValueError("the new name must not contain a path")
+    with ftps_session(ip, access_code) as ftps:
+        ftps.rename(source, target)
+    logger.info("Renamed %s -> %s on %s", source, target, ip)
+    return target
+
+
 def upload_3mf_file(ip: str, access_code: str, file_path: str, remote_dir: str = "/") -> bool:
     """Upload a sliced .3mf / .gcode.3mf project into the printer SD card."""
     filename = os.path.basename(file_path)

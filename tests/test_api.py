@@ -466,6 +466,72 @@ def test_file_delete_rejects_root(node, client, monkeypatch):
     assert res.status_code == 400
 
 
+def test_file_rename(node, client, monkeypatch):
+    calls = {}
+
+    def fake_rename(ip, code, path, new_name):
+        calls.update({"path": path, "new_name": new_name})
+        return "/apps/memo.3mf"
+
+    monkeypatch.setattr(main_module, "rename_path", fake_rename)
+    res = client.post(
+        f"/api/printers/{node}/files/rename",
+        json={"path": "/apps/notes.3mf", "new_name": "memo.3mf"},
+    )
+    assert res.status_code == 200
+    assert res.json()["path"] == "/apps/memo.3mf"
+    assert calls == {"path": "/apps/notes.3mf", "new_name": "memo.3mf"}
+
+
+def test_file_rename_only_accepts_3mf(node, client, monkeypatch):
+    monkeypatch.setattr(main_module, "rename_path", lambda *a: "/x.3mf")
+    # renaming a non-project file
+    assert client.post(
+        f"/api/printers/{node}/files/rename",
+        json={"path": "/apps/notes.txt", "new_name": "memo.3mf"},
+    ).status_code == 400
+    # and a new name that would drop the project suffix
+    assert client.post(
+        f"/api/printers/{node}/files/rename",
+        json={"path": "/apps/notes.3mf", "new_name": "memo.txt"},
+    ).status_code == 400
+
+
+def test_file_rename_rejects_a_path_in_the_name(node, client, monkeypatch):
+    monkeypatch.setattr(main_module, "rename_path", lambda *a: "/x.3mf")
+    for bad in ("../escaped.3mf", "sub/memo.3mf", "..", "back\\slash.3mf"):
+        res = client.post(
+            f"/api/printers/{node}/files/rename",
+            json={"path": "/apps/notes.3mf", "new_name": bad},
+        )
+        assert res.status_code in (400, 422), bad
+
+
+def test_file_rename_unchanged_name_is_a_noop(node, client, monkeypatch):
+    def boom(*a):
+        raise AssertionError("must not touch the SD card for an unchanged name")
+
+    monkeypatch.setattr(main_module, "rename_path", boom)
+    res = client.post(
+        f"/api/printers/{node}/files/rename",
+        json={"path": "/apps/memo.3mf", "new_name": "memo.3mf"},
+    )
+    assert res.status_code == 200
+    assert res.json()["status"] == "unchanged"
+
+
+def test_file_rename_surfaces_ftps_errors(node, client, monkeypatch):
+    def boom(*a):
+        raise OSError("550 rename failed")
+
+    monkeypatch.setattr(main_module, "rename_path", boom)
+    res = client.post(
+        f"/api/printers/{node}/files/rename",
+        json={"path": "/apps/notes.3mf", "new_name": "memo.3mf"},
+    )
+    assert res.status_code == 502
+
+
 def test_print_remote_from_sd_card(node, client, monkeypatch):
     # the printer must start the job for the call to succeed
     monkeypatch.setattr(main_module, "detect_plate_indices", lambda ip, code, path: [5])

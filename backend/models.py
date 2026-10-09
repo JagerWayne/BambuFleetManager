@@ -267,6 +267,13 @@ class DeleteEntryCommand(RemotePath):
     is_dir: bool = False
 
 
+class RenameEntryCommand(RemotePath):
+    """Rename a remote file. Only the basename is sent; the folder is derived
+    server-side from ``path``."""
+
+    new_name: str = Field(min_length=1, max_length=128)
+
+
 class PrintRemoteCommand(RemotePath):
     """Start a print for a project already sitting on the SD card."""
 
