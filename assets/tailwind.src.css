@@ -14,6 +14,16 @@
   --color-bambu-dark: #00a341;
 }
 
+/* ============================================================== layering ===
+  Everything below lives in the `components` layer on purpose. Unlayered CSS
+  beats every Tailwind layer regardless of source order, so an unlayered
+  `.chip { display: inline-flex }` would refuse to be hidden by the `hidden`
+  utility - which is exactly how `class="chip hidden"` used to render an empty
+  pill. Declared in `components`, the utilities layer wins again, so `hidden`,
+  `w-full`, `flex`, `p-*` and friends do what the markup asks.
+  ========================================================================= */
+@layer components {
+
 /* ============================================================= tokens ====
   * One scale drives the whole interface. Everything is themed through these
   * variables, so switching data-theme on <html> swaps backgrounds *and*
@@ -784,6 +794,21 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   color: var(--accent);
 }
 
+/* on a phone all six tabs must fit without the strip scrolling sideways */
+@media (max-width: 479.98px) {
+  .tabbar { overflow-x: visible; }
+
+  .tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.45rem 0.2rem;
+    text-align: center;
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
 /* --- form controls ---------------------------------------------------- */
 
 .field-label {
@@ -873,6 +898,112 @@ input[type="color"].field::-moz-color-swatch {
   color: var(--accent);
 }
 .choice.is-active .choice-sub { color: var(--accent); }
+
+/* --- skip-object list: mirrors the printer's own skip screen ------------ */
+
+.obj-list {
+  display: grid;
+  gap: var(--space-2xs);
+  max-height: 260px;
+  margin-top: var(--space-xs);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.obj-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  min-height: var(--tap-min);
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+.obj-row:hover:not(:disabled) { background: var(--surface-3); }
+.obj-row:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.obj-badge {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-full);
+  background: var(--track);
+  color: var(--text-mut);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+}
+
+.obj-title {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obj-sub {
+  display: block;
+  font-size: var(--fs-2xs);
+  color: var(--text-mut);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obj-tag {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-full);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* printed already - recedes */
+.obj-row.is-done { opacity: 0.5; }
+.obj-row.is-done .obj-title { text-decoration: line-through; }
+
+/* printing right now */
+.obj-row.is-current {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.obj-row.is-current .obj-badge { background: var(--accent); color: var(--accent-fg); }
+.obj-row.is-current .obj-title { color: var(--accent); }
+.obj-row.is-current .obj-tag {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* the one a skip would take next */
+.obj-row.is-next { border-color: var(--warn); }
+.obj-row.is-next .obj-badge { background: var(--warn-soft); color: var(--warn); }
+.obj-row.is-next .obj-tag { background: var(--warn-soft); color: var(--warn); }
+
+/* already queued for skipping */
+.obj-row.is-queued {
+  opacity: 0.75;
+  border-color: var(--accent-line);
+  border-style: dashed;
+}
+.obj-row.is-queued .obj-badge { background: var(--accent-soft); color: var(--accent); }
+.obj-row.is-queued .obj-tag {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 
 input[type="range"].slider {
   -webkit-appearance: none;
@@ -1084,3 +1215,4 @@ input[type="range"].slider::-moz-range-thumb {
     transition-duration: 0.001ms !important;
   }
 }
+} /* end @layer components */

@@ -153,6 +153,32 @@ function applyTelemetry(printer, t) {
   if (t.layer_num !== undefined) printer.layer = num(t.layer_num);
   if (t.total_layer_num !== undefined) printer.totalLayers = num(t.total_layer_num);
   if (t.mc_print_stage !== undefined) printer.stage = t.mc_print_stage;
+
+  // The object list and the object being printed. The printer's own skip
+  // screen is driven by job.stage[] plus job.cur_stage.idx; some firmware
+  // also sends the skippable ids in s_obj. Nothing here is guaranteed, so
+  // each shape is read defensively and anything missing simply stays unset.
+  const stages = (t.job && Array.isArray(t.job.stage)) ? t.job.stage : null;
+  if (stages) {
+    printer.objects = stages.map((s, i) => ({
+      id: num((s || {}).idx, i),
+      name: String((s || {}).name || '').trim(),
+      tool: Array.isArray((s || {}).tool) ? s.tool.filter(Boolean).join(' / ') : '',
+      estMin: num((s || {}).est_time, 0)
+    }));
+  } else if (Array.isArray(t.s_obj) && t.s_obj.length) {
+    printer.objects = t.s_obj
+      .filter((v) => typeof v === 'number')
+      .map((id, i) => ({ id, name: '', tool: '', estMin: 0 }));
+  }
+
+  const curStage = t.job && t.job.cur_stage ? t.job.cur_stage.idx : undefined;
+  if (curStage !== undefined && curStage !== null) printer.objectIndex = num(curStage, 0);
+  else if (t.mc_print_sub_stage !== undefined) printer.objectIndex = num(t.mc_print_sub_stage, 0);
+  // once the printer moves past a queued skip it stops mattering
+  if (Array.isArray(printer.skippedIds) && printer.objectIndex != null) {
+    printer.skippedIds = printer.skippedIds.filter((id) => id > printer.objectIndex);
+  }
   if (t.print_error !== undefined) printer.printError = t.print_error ? num(t.print_error) : 0;
   if (t.nozzle_diameter !== undefined) printer.nozzleDiameter = t.nozzle_diameter;
   if (t.nozzle_type) printer.nozzleType = t.nozzle_type;
@@ -325,10 +351,29 @@ function renderFleet() {
 function createCard(printer) {
   const root = document.createElement('article');
   root.dataset.cardId = printer.id;
-  root.className = 'card card-enter overflow-hidden lg:h-[540px] 2xl:h-[600px]';
+  root.className = 'card card-enter flex flex-col overflow-hidden lg:h-[540px] 2xl:h-[600px]';
 
   root.innerHTML = `
-    <div class="flex h-full flex-col lg:flex-row">
+    <!-- identity first: on a phone the name and status read above the camera -->
+    <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b line px-3 py-2.5 sm:px-4">
+      <div class="min-w-0 basis-full sm:basis-auto sm:flex-1">
+        <div class="flex items-center gap-2">
+          <span class="h-2 w-2 shrink-0 rounded-full" data-r="dot"></span>
+          <h3 class="min-w-0 truncate text-[15px] font-bold t-strong" data-r="name"></h3>
+          <span class="chip shrink-0" data-r="chip"></span>
+          <span class="chip shrink-0 hidden" data-r="homing"></span>
+        </div>
+        <div class="mt-0.5 truncate font-mono text-[10px] t-mut" data-r="meta"></div>
+      </div>
+      <div class="ml-auto flex shrink-0 items-center gap-1.5">
+        <button class="icon-btn" data-act="light" title="Toggle chamber light">💡</button>
+        <button class="icon-btn" data-act="edit" title="Edit name / IP / access code">✎</button>
+        <button class="icon-btn" data-act="panel" title="Show / hide controls">▾</button>
+        <button class="icon-btn" data-act="menu" title="Remove node">⋯</button>
+      </div>
+    </div>
+
+    <div class="flex min-h-0 flex-1 flex-col lg:flex-row">
 
       <!-- left: camera + everything at a glance -->
       <div class="card-aside flex shrink-0 flex-col gap-2 border-b p-3 line surface-2 lg:h-full lg:overflow-y-auto lg:border-b-0 lg:border-r">
@@ -398,29 +443,9 @@ function createCard(printer) {
         </div>
       </div>
 
-      <!-- right: identity + collapsible tabs -->
+      <!-- right: the tabbed control panel -->
       <div class="flex min-w-0 flex-1 flex-col">
-
-        <div class="flex items-start justify-between gap-3 px-4 pt-3 pb-2">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="h-2 w-2 shrink-0 rounded-full" data-r="dot"></span>
-              <h3 class="truncate text-[15px] font-bold t-strong" data-r="name"></h3>
-              <span class="chip" data-r="chip"></span>
-              <span class="chip hidden" data-r="homing"></span>
-            </div>
-            <div class="mt-0.5 truncate font-mono text-[10px] t-mut" data-r="meta"></div>
-          </div>
-          <div class="flex shrink-0 items-center gap-1.5">
-            <button class="icon-btn" data-act="light" title="Toggle chamber light">💡</button>
-            <button class="icon-btn" data-act="edit" title="Edit name / IP / access code">✎</button>
-            <button class="icon-btn" data-act="panel" title="Show / hide controls">▾</button>
-            <button class="icon-btn" data-act="menu" title="Remove node">⋯</button>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-1 overflow-x-auto border-b line px-4 pb-2" data-r="tabbar"></div>
-
+        <div class="flex items-center gap-1 overflow-x-auto border-b line px-3 pb-2 sm:px-4" data-r="tabbar"></div>
         <div class="min-h-0 flex-1 overflow-y-auto p-3" data-r="panel"></div>
       </div>
     </div>
@@ -600,8 +625,8 @@ function updateCard(printer, entry) {
 const TABS = [
   ['control', 'Control'],
   ['jog', 'Jog'],
-  ['temperature', 'Temperatures'],
-  ['files', 'SD card'],
+  ['temperature', 'Temp'],
+  ['files', 'Files'],
   ['ams', 'AMS'],
   ['system', 'System']
 ];
@@ -668,9 +693,124 @@ function refreshLive(body, printer) {
     const current = (printer.lights && printer.lights[b.dataset.node]) || '';
     b.setAttribute('aria-pressed', String(current === b.dataset.value));
   });
+
+  // The skip list only needs rebuilding when the objects, the current object or
+  // the queued skips actually change - telemetry arrives several times a second.
+  const skipBox = body.querySelector('[data-live="skip-objects"]');
+  if (skipBox) {
+    const sig = skipSignature(printer);
+    if (skipBox.dataset.sig !== sig) {
+      const holder = document.createElement('div');
+      holder.innerHTML = skipObjectsHtml(printer);
+      const fresh = holder.firstElementChild;
+      if (fresh) skipBox.replaceWith(fresh);
+    }
+  }
 }
 
 /* --------------------------------------------------------------- control */
+
+// ---------------------------------------------------------------- skip object
+// The printer reports its object list and the object it is on; the dashboard
+// shows the same thing the printer's own skip screen does, so it is always
+// obvious which object a skip will drop before the button is pressed.
+
+function objectText(obj, index) {
+  if (obj && obj.name) return obj.name;
+  return `Object ${(obj ? obj.id : index) + 1}`;
+}
+
+function objectSubtitle(obj) {
+  const bits = [];
+  if (obj && obj.tool) bits.push(obj.tool);
+  if (obj && obj.estMin > 0) bits.push(`~${Math.round(obj.estMin)} min`);
+  return bits.join(' · ');
+}
+
+// What the list knows about each object: printed already, printing now, the
+// one a skip would take next, or untouched.
+function objectState(printer, obj) {
+  const cur = printer.objectIndex;
+  if (cur == null) return 'todo';
+  if (obj.id < cur) return 'done';
+  if (obj.id === cur) return 'current';
+  if (obj.id === cur + 1) return 'next';
+  return 'todo';
+}
+
+function skipSignature(p) {
+  const objects = Array.isArray(p.objects) ? p.objects : [];
+  return [
+    objects.map((o) => `${o.id}:${o.name}:${o.tool}`).join(','),
+    p.objectIndex == null ? '' : p.objectIndex,
+    (p.skippedIds || []).join('.'),
+    p.status
+  ].join('|');
+}
+
+function skipObjectsHtml(p) {
+  const objects = Array.isArray(p.objects) ? p.objects : [];
+  const printing = p.status === 'running' || p.status === 'paused';
+
+  if (!objects.length) {
+    return `
+      <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
+        <p class="font-mono text-[10px] t-mut">
+          This job reports no object list, so there is nothing to skip from here.
+          A multi-object print fills the list below from the printer's own report.
+        </p>
+      </div>`;
+  }
+
+  const cur = p.objectIndex;
+  const current = cur == null ? null : objects.find((o) => o.id === cur);
+  const next = cur == null ? null : objects.find((o) => o.id === cur + 1);
+  const queued = Array.isArray(p.skippedIds) ? p.skippedIds : [];
+
+  const rows = objects.map((o, i) => {
+    const state = queued.indexOf(o.id) >= 0 ? 'queued' : objectState(p, o);
+    const tag = state === 'queued' ? 'skip queued'
+      : state === 'current' ? 'printing'
+        : state === 'done' ? 'printed'
+          : state === 'next' ? 'next up' : '';
+    return `<button class="obj-row is-${state}" data-action="skip" data-value="${o.id}"
+              ${printing ? '' : 'disabled'} title="Send skip for object id ${o.id}">
+        <span class="obj-badge">${o.id + 1}</span>
+        <span class="min-w-0 flex-1 text-left">
+          <span class="obj-title">${escapeHtml(objectText(o, i))}</span>
+          ${objectSubtitle(o) ? `<span class="obj-sub">${escapeHtml(objectSubtitle(o))}</span>` : ''}
+        </span>
+        ${tag ? `<span class="obj-tag">${tag}</span>` : ''}
+      </button>`;
+  }).join('');
+
+  return `
+    <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
+      <div class="flex items-center justify-between gap-2">
+        <span class="chip chip-ok">Object ${cur == null ? '-' : cur + 1} of ${objects.length}</span>
+        <span class="font-mono text-[10px] t-mut">${printing ? 'job active' : 'start a job to skip'}</span>
+      </div>
+
+      <div class="mt-2 flex gap-2">
+        ${btn('Skip current', 'skip', {
+          cls: 'flex-1 btn-primary',
+          data: { value: current ? current.id : '' },
+          disabled: !current || !printing
+        })}
+        ${btn('Skip next', 'skip', {
+          cls: 'flex-1',
+          data: { value: next ? next.id : '' },
+          disabled: !next || !printing
+        })}
+      </div>
+
+      <div class="obj-list">${rows}</div>
+
+      <p class="font-mono text-[10px] t-mut">
+        Sends the object id over MQTTS; the printer drops that part and keeps the rest.
+      </p>
+    </div>`;
+}
 
 function btn(label, action, opts = {}) {
   const attrs = Object.entries(opts.data || {}).map(([k, v]) => `data-${k}="${v}"`).join(' ');
@@ -738,13 +878,7 @@ function controlHtml(p) {
       { value: 'on', label: 'On' }, { value: 'off', label: 'Off' }
     ], 'light-work')}`;
 
-  const skipSection = `
-    <div class="grid grid-cols-4 gap-2 sm:grid-cols-8">
-      ${[0, 1, 2, 3, 4, 5, 6, 7].map((i) => choice('skip', i, String(i + 1), '')).join('')}
-    </div>
-    <p class="font-mono text-[10px] t-mut">
-      Drops one part from the plate and keeps printing the rest — only meaningful during a job.
-    </p>`;
+  const skipSection = skipObjectsHtml(p);
 
   const calibration = `
     <div class="mb-2 flex items-center justify-between gap-2">
@@ -1197,9 +1331,22 @@ async function handleAction(printerId, el, entry) {
       if (ok) { const p = printerById(printerId); if (p) p.lights = Object.assign({}, p.lights || {}, { [el.dataset.node]: el.dataset.value }); scheduleRender(); success('light updated'); }
       break;
     }
-    case 'skip':
-      await post(`/api/printers/${printerId}/skip-objects`, { object_ids: [Number(el.dataset.value)] });
-      success('skip sent'); break;
+    case 'skip': {
+      const p = printerById(printerId);
+      const id = Number(el.dataset.value);
+      if (!Number.isFinite(id)) { toast('No object selected', 'warn'); return; }
+      const obj = ((p && p.objects) || []).find((o) => o.id === id);
+      const label = objectText(obj, id);
+      const ok = await post(`/api/printers/${printerId}/skip-objects`, { object_ids: [id] });
+      if (!ok) return;
+      if (p) {
+        p.skippedIds = [...new Set([...(p.skippedIds || []), id])];
+        refreshLive(entry.refs.panel, p);
+      }
+      toast(`Skip queued - object id ${id}${obj && obj.name ? ` (${obj.name})` : ''}. `
+        + 'Watch the printer screen: it stops before that object and moves on.', 'ok');
+      break;
+    }
     case 'calibrate': {
       if (!motionConfirmed(el)) { toast('Tick the confirmation box first — this moves the printer', 'warn'); return; }
       const label = el.dataset.value.replace(/_/g, ' ');
