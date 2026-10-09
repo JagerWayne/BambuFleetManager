@@ -681,10 +681,8 @@ h1, h2, h3, h4 { color: var(--text-strong); }
   gap: var(--space-md);
 }
 
-/* two consoles side by side once there is genuinely room for them */
-@media (min-width: 1536px) {
-  .fleet-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+/* one printer is mounted at a time; the sole card always spans the whole grid */
+.fleet-grid > [data-card-id] { grid-column: 1 / -1; }
 
 /* ============================================================ controls === */
 
