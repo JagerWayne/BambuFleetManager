@@ -148,13 +148,15 @@ def ftps_session(ip: str, access_code: str, timeout: int = FTPS_TIMEOUT) -> Iter
         finally:
             try:
                 ftps.quit()
-            except Exception:
+            except Exception as exc:
+                logger.debug("FTPS quit failed, closing hard: %s", exc)
                 ftps.close()
-    except Exception:
+    except Exception as exc:
+        logger.debug("FTPS session cleanup after failure: %s", exc)
         try:
             ftps.close()
-        except Exception:
-            pass
+        except Exception as cleanup_exc:
+            logger.debug("FTPS close failed: %s", cleanup_exc)
         raise
 
 
@@ -363,12 +365,12 @@ def download_stream(ip: str, access_code: str, path: str, timeout: int = FTPS_TI
         finally:
             try:
                 sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Data socket close failed: %s", exc)
             try:
                 ftps.voidresp()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("FTPS voidresp after transfer failed: %s", exc)
 
 
 def remote_file_exists(ip: str, access_code: str, path: str) -> bool:
@@ -418,12 +420,12 @@ def read_remote_tail(
         finally:
             try:
                 sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Data socket close failed: %s", exc)
             try:
                 ftps.voidresp()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("FTPS voidresp after transfer failed: %s", exc)
     return b"".join(chunks)
 
 
@@ -465,12 +467,12 @@ def read_remote_range(
         finally:
             try:
                 sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Data socket close failed: %s", exc)
             try:
                 ftps.voidresp()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("FTPS voidresp after transfer failed: %s", exc)
     return data
 
 
@@ -547,12 +549,12 @@ def read_remote_zip_entries(
             finally:
                 try:
                     sock.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Data socket close failed: %s", exc)
                 try:
                     ftps.voidresp()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("FTPS voidresp after transfer failed: %s", exc)
             return data
 
         tail_len = min(size, 200_000)

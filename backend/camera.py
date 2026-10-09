@@ -59,7 +59,8 @@ def ffmpeg_exe() -> Optional[str]:
         import imageio_ffmpeg
 
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
+    except Exception as exc:
+        logger.debug("No bundled ffmpeg (imageio_ffmpeg: %s); falling back to PATH", exc)
         return shutil.which("ffmpeg")
 
 
@@ -130,20 +131,20 @@ class MjpegProcess:
         self.stopped = True
         try:
             self.process.terminate()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ffmpeg terminate already failed: %s", exc)
         try:
             self.process.wait(timeout=timeout)
         except Exception:
             try:
                 self.process.kill()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ffmpeg kill failed: %s", exc)
         try:
             if self.process.stdout is not None:
                 self.process.stdout.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ffmpeg pipe close failed: %s", exc)
 
 
 #: One live MJPEG stream per printer, so a reload or a second viewer takes over
@@ -315,8 +316,8 @@ def open_stream(ip: str) -> Tuple[str, Iterator[bytes]]:
 def close_stream(response: requests.Response) -> None:
     try:
         response.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Camera response close failed: %s", exc)
 
 
 # --------------------------------------------------------------------- RTSP
@@ -408,12 +409,12 @@ class RtspCamera:
             try:
                 self.keepalive()
                 self._transact("TEARDOWN", self._url())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("RTSP teardown failed (session may already be gone): %s", exc)
             try:
                 self.sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("RTSP socket close failed: %s", exc)
             self.sock = None
 
     def _auth_header(self, method: str, url: str) -> str:
