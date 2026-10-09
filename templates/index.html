@@ -210,8 +210,33 @@
 
     <div class="modal-actions">
       <div class="modal-actions-end">
+        <button type="button" id="print-skip" class="btn btn-ghost" disabled
+                title="Skip objects only while a job is printing">Skip objects…</button>
         <button type="button" id="print-cancel" class="btn btn-ghost">Cancel</button>
         <button type="button" id="print-start" class="btn btn-primary">Start print</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================ skip objects modal
+     Opened from the Control tab and the print preview. Objects are toggles:
+     green = keep, red = pending skip, grey = already skipped (cannot be
+     undone). Confirming sends the whole pending set in one request. -->
+<div id="modal-skip" class="modal fixed inset-0 z-50 hidden items-center justify-center p-4">
+  <div class="modal-panel card w-full max-w-lg p-5" role="dialog" aria-modal="true" aria-labelledby="skip-title">
+    <div class="mb-3 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <h3 id="skip-title" class="text-base font-bold t-strong">Skip objects</h3>
+        <p id="skip-sub" class="truncate font-mono text-[10px] t-mut"></p>
+      </div>
+      <button type="button" id="skip-close" class="icon-btn shrink-0" aria-label="Close">✕</button>
+    </div>
+    <div id="skip-bed"></div>
+    <div class="modal-actions">
+      <div class="modal-actions-end">
+        <button type="button" id="skip-cancel" class="btn btn-ghost">Cancel</button>
+        <button type="button" id="skip-confirm" class="btn btn-primary" disabled>Skip selected</button>
       </div>
     </div>
   </div>

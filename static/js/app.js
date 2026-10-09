@@ -20,9 +20,12 @@ const state = {
   print: { printerId: null, path: null, plan: null, plate: 1, mapping: {} },
   // full path of the file each printer is running, so the skip bed can find it
   printPath: {},
-  // plate geometry per filename; null means "tried, unavailable" so we do not refetch
+  // plate geometry per "path|plate"; null means "tried, unavailable" so we do not refetch
   plateGeom: {},
   plateGeomPending: {},
+  // pending skip selection + the printer/path/plate the skip modal is editing
+  skipSelection: new Set(),
+  skipCtx: null,
   trayPicker: null,
   filament: null,
   filaments: [],
@@ -774,25 +777,13 @@ function objectSubtitle(obj) {
   return bits.join(' · ');
 }
 
-// What the list knows about each object: printed already, printing now, the
-// one a skip would take next, or untouched.
-function objectState(printer, obj) {
-  const cur = printer.objectIndex;
-  if (cur == null) return 'todo';
-  if (obj.id < cur) return 'done';
-  if (obj.id === cur) return 'current';
-  if (obj.id === cur + 1) return 'next';
-  return 'todo';
-}
-
 function skipSignature(p) {
   const objects = Array.isArray(p.objects) ? p.objects : [];
   return [
     objects.map((o) => `${o.id}:${o.name}:${o.tool}`).join(','),
     p.objectIndex == null ? '' : p.objectIndex,
     (p.skippedIds || []).join('.'),
-    p.status,
-    plateGeomFor(p) ? 'bed' : 'text'
+    p.status
   ].join('|');
 }
 
@@ -803,46 +794,41 @@ function plateFromJob(filename) {
   return match ? Number(match[1]) : 1;
 }
 
-// Fetch the sliced plate geometry once per filename so telemetry ticks do not
-// refetch it. Returns the cached data, or null while it is loading or when the
-// project has none (the caller then falls back to the text list).
-function plateGeomFor(printer) {
-  if (!printer || !printer.job) return null;
-  const key = printer.job;
+// Fetch the sliced plate geometry once per (path, plate) so telemetry ticks do
+// not refetch it. Returns the cached data, or null while it is loading or when
+// the project has none (the caller then falls back to the live object list).
+function plateGeomFor(printer, opts = {}) {
+  if (!printer) return null;
+  const path = opts.path
+    || (state.printPath && state.printPath[printer.id])
+    || ('/' + (printer.job || ''));
+  const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
+  const key = `${path}|${plate}`;
   if (Object.prototype.hasOwnProperty.call(state.plateGeom, key)) {
     return state.plateGeom[key];
   }
   if (state.plateGeomPending[key]) return null;
   state.plateGeomPending[key] = true;
-  const path = (state.printPath && state.printPath[printer.id]) || ('/' + printer.job);
-  const plate = plateFromJob(printer.job);
   api(`/api/printers/${printer.id}/files/objects?path=${encodeURIComponent(path)}&plate=${plate}`)
     .then((data) => {
       state.plateGeom[key] = (data && Array.isArray(data.objects) && data.objects.length)
         ? data : null;
     })
     .catch(() => { state.plateGeom[key] = null; })
-    .then(() => { scheduleRender(); });
+    .then(() => {
+      scheduleRender();
+      if (state.skipCtx && state.skipCtx.printerId === printer.id) renderSkipModal();
+    });
   return null;
 }
 
-// State of a bed object by its slicer index, which is the order the printer
-// reports its live object list in.
-function bedObjectState(p, index) {
-  const cur = p.objectIndex;
-  if (cur == null) return 'todo';
-  if (index < cur) return 'done';
-  if (index === cur) return 'current';
-  if (index === cur + 1) return 'next';
-  return 'todo';
-}
-
+// The Control tab summarises the object position and hands the choosing off to
+// the skip modal. Nothing here sends a skip on its own.
 function skipObjectsHtml(p) {
   const objects = Array.isArray(p.objects) ? p.objects : [];
   const printing = p.status === 'running' || p.status === 'paused';
-  const geom = p.job ? plateGeomFor(p) : null;
-
-  if (geom && geom.objects.length) return skipBedHtml(p, geom, printing);
+  const cur = p.objectIndex;
+  const skipped = Array.isArray(p.skippedIds) ? p.skippedIds.length : 0;
 
   if (!objects.length) {
     return `
@@ -854,28 +840,6 @@ function skipObjectsHtml(p) {
       </div>`;
   }
 
-  const cur = p.objectIndex;
-  const current = cur == null ? null : objects.find((o) => o.id === cur);
-  const next = cur == null ? null : objects.find((o) => o.id === cur + 1);
-  const queued = Array.isArray(p.skippedIds) ? p.skippedIds : [];
-
-  const rows = objects.map((o, i) => {
-    const state = queued.indexOf(o.id) >= 0 ? 'queued' : objectState(p, o);
-    const tag = state === 'queued' ? 'skip queued'
-      : state === 'current' ? 'printing'
-        : state === 'done' ? 'printed'
-          : state === 'next' ? 'next up' : '';
-    return `<button class="obj-row is-${state}" data-action="skip" data-value="${o.id}"
-              ${printing ? '' : 'disabled'} title="Send skip for object id ${o.id}">
-        <span class="obj-badge">${o.id + 1}</span>
-        <span class="min-w-0 flex-1 text-left">
-          <span class="obj-title">${escapeHtml(objectText(o, i))}</span>
-          ${objectSubtitle(o) ? `<span class="obj-sub">${escapeHtml(objectSubtitle(o))}</span>` : ''}
-        </span>
-        ${tag ? `<span class="obj-tag">${tag}</span>` : ''}
-      </button>`;
-  }).join('');
-
   return `
     <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
       <div class="flex items-center justify-between gap-2">
@@ -883,86 +847,173 @@ function skipObjectsHtml(p) {
         <span class="font-mono text-[10px] t-mut">${printing ? 'job active' : 'start a job to skip'}</span>
       </div>
 
-      <div class="mt-2 flex gap-2">
-        ${btn('Skip current', 'skip', {
-          cls: 'flex-1 btn-primary',
-          data: { value: current ? current.id : '' },
-          disabled: !current || !printing
-        })}
-        ${btn('Skip next', 'skip', {
-          cls: 'flex-1',
-          data: { value: next ? next.id : '' },
-          disabled: !next || !printing
-        })}
+      <div class="mt-2">
+        ${btn('Skip objects…', 'open-skip', { cls: 'w-full btn-primary', disabled: !printing })}
       </div>
 
-      <div class="obj-list">${rows}</div>
-
       <p class="font-mono text-[10px] t-mut">
-        Sends the object id over MQTTS; the printer drops that part and keeps the rest.
+        Choose the objects to drop from the plate; the printer keeps the rest.
+        ${skipped ? `${skipped} already skipped.` : ''}
       </p>
     </div>`;
 }
 
-// Top-down bed diagram: the same shape the printer's own skip screen draws.
-// Each rectangle is one object at its real plate position; tapping it skips
-// that object. The slicer and the printer report objects in the same order, so
-// geometry is correlated to the live list by index.
-function skipBedHtml(p, geom, printing) {
-  const objects = Array.isArray(p.objects) ? p.objects : [];
-  const cur = p.objectIndex;
-  const current = cur == null ? null : objects.find((o) => o.id === cur);
-  const next = cur == null ? null : objects.find((o) => o.id === cur + 1);
-  const queued = Array.isArray(p.skippedIds) ? p.skippedIds : [];
-  const bedW = (geom.bed && geom.bed[0]) || 256;
-  const bedH = (geom.bed && geom.bed[1]) || 256;
+/* ------------------------------------------------------------- skip modal */
 
-  const rects = geom.objects.map((g, i) => {
-    const live = objects[i];
-    const skipId = live ? live.id : g.id;
-    const s = queued.indexOf(skipId) >= 0 ? 'queued' : bedObjectState(p, i);
-    const bb = g.bbox || [0, 0, 1, 1];
-    const w = Math.max(1, bb[2] - bb[0]);
-    const h = Math.max(1, bb[3] - bb[1]);
-    const x = bb[0];
-    // plate Y grows away from the viewer, screen Y grows down -> flip it
-    const y = Math.max(0, bedH - bb[3]);
-    const label = escapeHtml((live && objectText(live, i)) || g.name || `Object ${i + 1}`);
-    const tag = s === 'queued' ? ' · skip queued' : s === 'current' ? ' · printing'
-      : s === 'done' ? ' · printed' : s === 'next' ? ' · next up' : '';
-    return `<rect class="bed-obj is-${s}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"
-              data-action="skip" data-value="${skipId}" ${printing ? '' : 'data-disabled="1"'}
-              role="button" tabindex="0" aria-label="${label}${tag}"><title>${label}${tag}</title></rect>`;
-  }).join('');
+function skipItemState(printer, id) {
+  const skipped = Array.isArray(printer.skippedIds) ? printer.skippedIds : [];
+  if (skipped.indexOf(id) >= 0) return 'is-skipped';
+  return state.skipSelection.has(id) ? 'is-pending' : 'is-todo';
+}
 
-  return `
-    <div data-live="skip-objects" data-sig="${escapeHtml(skipSignature(p))}">
-      <div class="flex items-center justify-between gap-2">
-        <span class="chip chip-ok">Object ${cur == null ? '-' : cur + 1} of ${geom.objects.length}</span>
-        <span class="font-mono text-[10px] t-mut">${printing ? 'job active' : 'start a job to skip'}</span>
-      </div>
+// One toggle per object: geometry when the sliced plate map is available,
+// otherwise the printer's own live object report.
+function skipItemsFor(ctx, printer) {
+  const geom = plateGeomFor(printer, { path: ctx.path, plate: ctx.plate });
+  const live = Array.isArray(printer.objects) ? printer.objects : [];
+  const key = `${ctx.path}|${ctx.plate}`;
+  const tried = Object.prototype.hasOwnProperty.call(state.plateGeom, key);
 
-      <div class="mt-2 flex gap-2">
-        ${btn('Skip current', 'skip', {
-          cls: 'flex-1 btn-primary',
-          data: { value: current ? current.id : '' },
-          disabled: !current || !printing
-        })}
-        ${btn('Skip next', 'skip', {
-          cls: 'flex-1',
-          data: { value: next ? next.id : '' },
-          disabled: !next || !printing
-        })}
-      </div>
+  if (geom && Array.isArray(geom.objects) && geom.objects.length) {
+    return {
+      kind: 'bed',
+      bed: geom.bed || [256, 256],
+      items: geom.objects.map((g, i) => {
+        const l = live[i];
+        return {
+          id: l ? l.id : g.id,
+          name: (l && l.name) || g.name || `Object ${i + 1}`,
+          sub: l ? objectSubtitle(l) : '',
+          bbox: g.bbox || [0, 0, 1, 1]
+        };
+      })
+    };
+  }
+  if (live.length) {
+    return {
+      kind: 'list',
+      items: live.map((o, i) => ({ id: o.id, name: objectText(o, i), sub: objectSubtitle(o), bbox: null }))
+    };
+  }
+  if (!tried && printer.job && printer.job !== 'None') return { kind: 'loading', items: [] };
+  return { kind: 'empty', items: [] };
+}
 
-      <svg class="bed-svg" viewBox="0 0 ${bedW} ${bedH}" role="img"
-           aria-label="Build plate with ${geom.objects.length} objects">${rects}</svg>
+function renderSkipModal() {
+  const ctx = state.skipCtx;
+  if (!ctx) return;
+  const printer = printerById(ctx.printerId);
+  if (!printer) return;
+  const running = printer.status === 'running' || printer.status === 'paused';
+  const info = skipItemsFor(ctx, printer);
 
-      <p class="font-mono text-[10px] t-mut">
-        Tap an object to skip it. Sends the object id over MQTTS; the printer drops that part
-        and keeps the rest.
-      </p>
-    </div>`;
+  $('skip-title').textContent = 'Skip objects';
+  $('skip-sub').textContent = `${printer.name || ctx.printerId} · ${running ? 'job active' : 'not printing'}`;
+
+  const count = state.skipSelection.size;
+  const confirmBtn = $('skip-confirm');
+  confirmBtn.textContent = count ? `Skip selected (${count})` : 'Skip selected';
+  confirmBtn.disabled = !running || count === 0;
+
+  const box = $('skip-bed');
+  if (info.kind === 'loading') {
+    box.innerHTML = '<p class="font-mono text-[10px] t-mut">reading the plate map…</p>';
+    return;
+  }
+  if (info.kind === 'empty') {
+    box.innerHTML = '<p class="font-mono text-[10px] t-mut">This job reports no objects to skip.</p>';
+    return;
+  }
+
+  const disabled = (id) => skipItemState(printer, id) === 'is-skipped' || !running;
+
+  if (info.kind === 'bed') {
+    const bedW = info.bed[0] || 256;
+    const bedH = info.bed[1] || 256;
+    const rects = info.items.map((it) => {
+      const bb = it.bbox;
+      const w = Math.max(1, bb[2] - bb[0]);
+      const h = Math.max(1, bb[3] - bb[1]);
+      const x = bb[0];
+      // plate Y grows away from the viewer, screen Y grows down -> flip it
+      const y = Math.max(0, bedH - bb[3]);
+      const cls = skipItemState(printer, it.id);
+      const label = escapeHtml(it.name) + (cls === 'is-skipped' ? ' · skipped' : '');
+      return `<rect class="bed-obj ${cls}" x="${x}" y="${y}" width="${w}" height="${h}" rx="2"
+                data-skip-id="${it.id}" ${disabled(it.id) ? 'data-disabled="1"' : ''}
+                role="button" tabindex="0" aria-label="${label}"><title>${label}</title></rect>`;
+    }).join('');
+    box.innerHTML = `<svg class="bed-svg" viewBox="0 0 ${bedW} ${bedH}" role="img"
+        aria-label="Build plate with ${info.items.length} objects">${rects}</svg>`;
+    return;
+  }
+
+  box.innerHTML = `<div class="obj-list">${info.items.map((it) => {
+    const cls = skipItemState(printer, it.id);
+    return `<button type="button" class="obj-row ${cls}" data-skip-id="${it.id}"
+              ${disabled(it.id) ? 'disabled' : ''}>
+      <span class="obj-badge">${it.id + 1}</span>
+      <span class="min-w-0 flex-1 text-left">
+        <span class="obj-title">${escapeHtml(it.name)}</span>
+        ${it.sub ? `<span class="obj-sub">${escapeHtml(it.sub)}</span>` : ''}
+      </span>
+      ${cls === 'is-skipped' ? '<span class="obj-tag">skipped</span>' : ''}
+    </button>`;
+  }).join('')}</div>`;
+}
+
+// Entry point shared by the Control tab and the print preview. opts may carry
+// an explicit { path, plate } when the caller knows the file being printed.
+function openSkipModal(printerId, opts = {}) {
+  const printer = printerById(printerId);
+  if (!printer) { toast('Printer not found', 'error'); return; }
+  const path = opts.path
+    || (state.printPath && state.printPath[printerId])
+    || ('/' + (printer.job || ''));
+  const plate = opts.plate != null ? opts.plate : plateFromJob(printer.job);
+  state.skipCtx = { printerId, path, plate };
+  state.skipSelection = new Set();
+  $('modal-skip').classList.replace('hidden', 'flex');
+  renderSkipModal();
+}
+
+function closeSkipModal() {
+  state.skipCtx = null;
+  state.skipSelection = new Set();
+  $('modal-skip').classList.replace('flex', 'hidden');
+}
+
+// Skipped objects are locked: re-clicking one can never unskip it.
+function toggleSkipObject(id) {
+  const ctx = state.skipCtx;
+  if (!ctx) return;
+  const printer = printerById(ctx.printerId);
+  if (!printer) return;
+  if ((printer.skippedIds || []).indexOf(id) >= 0) return;
+  if (printer.status !== 'running' && printer.status !== 'paused') return;
+  if (state.skipSelection.has(id)) state.skipSelection.delete(id);
+  else state.skipSelection.add(id);
+  renderSkipModal();
+}
+
+async function confirmSkip() {
+  const ctx = state.skipCtx;
+  if (!ctx) return;
+  const printer = printerById(ctx.printerId);
+  if (!printer) return;
+  const ids = [...state.skipSelection];
+  if (!ids.length) return;
+  if (printer.status !== 'running' && printer.status !== 'paused') {
+    toast('The printer is not running a job', 'warn');
+    return;
+  }
+  const ok = await post(`/api/printers/${ctx.printerId}/skip-objects`, { object_ids: ids });
+  if (!ok) return;  // error toasts in post(); keep the modal open so a retry is possible
+  printer.skippedIds = [...new Set([...(printer.skippedIds || []), ...ids])];
+  toast(`Skip queued for ${ids.length} object${ids.length === 1 ? '' : 's'}. Watch the printer screen.`, 'ok');
+  state.skipSelection = new Set();
+  renderSkipModal();
+  closeSkipModal();
 }
 
 function btn(label, action, opts = {}) {
@@ -1679,22 +1730,9 @@ async function handleAction(printerId, el, entry) {
       if (ok) { const p = printerById(printerId); if (p) p.lights = Object.assign({}, p.lights || {}, { [el.dataset.node]: el.dataset.value }); scheduleRender(); success('light updated'); }
       break;
     }
-    case 'skip': {
-      const p = printerById(printerId);
-      const id = Number(el.dataset.value);
-      if (!Number.isFinite(id)) { toast('No object selected', 'warn'); return; }
-      const obj = ((p && p.objects) || []).find((o) => o.id === id);
-      const label = objectText(obj, id);
-      const ok = await post(`/api/printers/${printerId}/skip-objects`, { object_ids: [id] });
-      if (!ok) return;
-      if (p) {
-        p.skippedIds = [...new Set([...(p.skippedIds || []), id])];
-        refreshLive(entry.refs.panel, p);
-      }
-      toast(`Skip queued - object id ${id}${obj && obj.name ? ` (${obj.name})` : ''}. `
-        + 'Watch the printer screen: it stops before that object and moves on.', 'ok');
+    case 'open-skip':
+      openSkipModal(printerId);
       break;
-    }
     case 'calibrate': {
       if (!motionConfirmed(el)) { toast('Tick the confirmation box first — this moves the printer', 'warn'); return; }
       const label = el.dataset.value.replace(/_/g, ' ');
@@ -2727,6 +2765,14 @@ function renderPrintDialog() {
   const { plan, plate } = state.print;
   if (!plan) return;
 
+  // Skipping only makes sense for a job that is already running. Keep the
+  // button's state in step with the dialog's printer.
+  const printer = printerById(state.print.printerId);
+  const skipBtn = $('print-skip');
+  if (skipBtn) {
+    skipBtn.disabled = !printer || (printer.status !== 'running' && printer.status !== 'paused');
+  }
+
   $('print-sub').textContent = `${plan.name} · ${plan.path}`;
 
   // plate thumbnails
@@ -2843,6 +2889,7 @@ async function openPrintDialog(printerId, path) {
   $('print-img').classList.add('hidden');
   $('print-img-loading').textContent = 'loading preview…';
   $('print-img-loading').classList.remove('hidden');
+  $('print-skip').disabled = true;
   $('modal-print').classList.replace('hidden', 'flex');
   try {
     const plan = await api(`/api/printers/${printerId}/files/plan?path=${encodeURIComponent(path)}`);
@@ -2910,6 +2957,17 @@ function wireStatic() {
   $('print-close').addEventListener('click', closePrintDialog);
   $('print-cancel').addEventListener('click', closePrintDialog);
   $('print-start').addEventListener('click', startPrintFromDialog);
+  $('print-skip').addEventListener('click', () => {
+    if (!state.print.printerId) return;
+    openSkipModal(state.print.printerId, { path: state.print.path, plate: state.print.plate });
+  });
+  $('skip-close').addEventListener('click', closeSkipModal);
+  $('skip-cancel').addEventListener('click', closeSkipModal);
+  $('skip-confirm').addEventListener('click', confirmSkip);
+  $('skip-bed').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-skip-id]');
+    if (el) toggleSkipObject(Number(el.dataset.skipId));
+  });
   $('filament-cancel').addEventListener('click', closeFilamentEditor);
   $('filament-save').addEventListener('click', saveFilament);
   $('filament-type').addEventListener('change', updateFilamentPreset);

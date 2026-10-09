@@ -1,4 +1,9 @@
-/* DOM-level test of the skip-object list and its live refresh (jsdom). */
+/* DOM-level test of the redesigned skip-object UX (jsdom).
+ *
+ * The Control tab only summarises and opens the skip modal; the modal renders
+ * one toggle per object (green keep / red pending / grey locked), and "Skip
+ * selected" posts the whole pending set in one request. A skip can never be
+ * undone. */
 const fs = require('fs');
 const { JSDOM } = require('jsdom');
 
@@ -7,113 +12,186 @@ const appJs = fs.readFileSync('static/js/app.js', 'utf8');
 
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://localhost/' });
 const { window } = dom;
+const doc = window.document;
 window.requestAnimationFrame = (fn) => setTimeout(fn, 0);
-window.WebSocket = class { close() {} send() {} };
-window.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve('1.1.0') });
+window.matchMedia = (q) => ({ matches: false, media: q, addEventListener: () => {}, removeEventListener: () => {} });
+window.IntersectionObserver = class { constructor() {} observe() {} unobserve() {} disconnect() {} };
+window.WebSocket = class { constructor() { window.__ws = this; } close() {} send() {} };
+
+const FLEET = [
+  { id: 'n1', name: 'X1C', ip: '1.2.3.4', sn: 'SN', bed_type: 'cool_plate', ams_count: 1 }
+];
+
+const calls = [];
+window.fetch = (url, opts = {}) => {
+  const method = (opts.method || 'GET').toUpperCase();
+  calls.push({ url: String(url), method, body: opts.body });
+  let payload = {};
+  if (String(url).endsWith('/api/printers') && method === 'GET') payload = FLEET;
+  else if (String(url).indexOf('/api/settings') >= 0) payload = { allow_motion: false, current_port: 8000 };
+  else if (String(url).indexOf('/api/uploads') >= 0) payload = [];
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload), text: () => Promise.resolve('1.11.0') });
+};
+
 window.eval(appJs);
 
 let pass = 0, fail = 0;
 const check = (l, ok, x = '') => { console.log((ok ? 'PASS  ' : 'FAIL  ') + l + (x ? ' -> ' + x : '')); ok ? pass++ : fail++; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const card = () => doc.querySelector('[data-card-id]');
+const panel = () => card() && card().querySelector('[data-r="panel"]');
+const click = (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+const skipPost = () => calls.find((c) => c.url.indexOf('/skip-objects') >= 0 && c.method === 'POST');
+
+/* --- telemetry still builds the live object list ------------------------- */
 
 const base = {
   id: 'n1', name: 'X1C', ip: '1.2.3.4', sn: 'S', status: 'running',
   progress: 40, objects: [], objectIndex: null, skippedIds: []
 };
 
-/* --- the printer reports job.stage[] + job.cur_stage.idx ------------------ */
-
 const p = Object.assign({}, base);
 window.applyTelemetry(p, {
   gcode_state: 'RUNNING',
-  subtask_name: 'plate.gcode.3mf',
+  subtask_name: 'Cube_plate_1.gcode.3mf',
   mc_print_sub_stage: 2,
   job: {
     cur_stage: { idx: 2, state: 0 },
     stage: [
-      { idx: 0, name: '', tool: ['HX00'], est_time: 12 },
-      { idx: 1, name: 'Phone stand', tool: ['HX00'], est_time: 20 },
-      { idx: 2, name: 'Cable clip', tool: ['HX00'], est_time: 8 },
-      { idx: 3, name: 'Name tag', tool: ['HX00'], est_time: 5 }
+      { idx: 92, name: 'Phone stand', tool: ['HX00'], est_time: 20 },
+      { idx: 191, name: 'Cable clip', tool: ['HX00'], est_time: 8 },
+      { idx: 192, name: 'Name tag', tool: ['HX00'], est_time: 5 },
+      { idx: 193, name: 'Bracket', tool: ['HX00'], est_time: 12 }
     ]
   }
 });
 
 check('object count from job.stage', p.objects.length === 4, p.objects.length);
-check('object names kept', p.objects[1].name === 'Phone stand', p.objects[1].name);
-check('unnamed objects fall back to a number', p.objects[0].name === '', JSON.stringify(p.objects[0]));
+check('object names kept', p.objects[1].name === 'Cable clip', p.objects[1].name);
 check('current object index', p.objectIndex === 2, p.objectIndex);
 
-/* --- the rendered panel names the object that will be skipped ------------- */
+/* --- Control tab: summary + modal entry, no direct skip ------------------- */
 
 const markup = window.controlHtml(p);
 check('shows the current object position', markup.includes('Object 3 of 4'), '');
-check('lists every object row', (markup.match(/data-action="skip"/g) || []).length >= 6,
-  (markup.match(/data-action="skip"/g) || []).length);
-check('marks the printing object', markup.includes('is-current'));
-check('marks the object that is next up', markup.includes('is-next'));
-check('marks already-printed objects', markup.includes('is-done'));
-check('shows the slice object name', markup.includes('Phone stand'));
-check('"Skip next" targets object id 3', markup.includes('data-value="3"'));
-check('still describes the protocol', markup.includes('object id'));
-
-/* --- no object list: say so instead of inventing a grid ------------------- */
+check('offers the skip modal', markup.includes('Skip objects'), '');
+check('the entry point is a button', markup.includes('data-action="open-skip"'), '');
+check('no direct skip targets remain', !markup.includes('data-action="skip"'), '');
+check('Skip current / Skip next are gone',
+  !markup.includes('Skip current') && !markup.includes('Skip next'), '');
+check('still describes the flow', markup.includes('keeps the rest'), '');
 
 const empty = window.controlHtml(Object.assign({}, base, { status: 'idle' }));
 check('no list -> explains itself', empty.includes('no object list'));
-check('no list -> no skip rows', !empty.includes('data-action="skip"'));
+check('no list -> no skip targets', !empty.includes('data-action="skip"'));
 
-/* --- not printing: rows are disabled, buttons inert ---------------------- */
+/* --- modal flow driven through the DOM ------------------------------------ */
 
-const idle = window.controlHtml(Object.assign({}, p, { status: 'idle', objects: p.objects, objectIndex: 2 }));
-check('idle job disables the rows', idle.includes('data-action="skip" data-value="2" disabled'));
-check('idle job disables Skip current', idle.includes('data-action="skip" data-value="2" disabled'));
+(async () => {
+  window.wireStatic();
+  await window.loadFleet();
+  window.renderFleet();
+  await sleep(40);
+  check('a printer is mounted', Boolean(card()));
+  check('control tab has no direct skip targets', !/data-action="skip"/.test(panel().innerHTML));
 
-/* --- queued skips show up, and drop off once the printer passes them ------ */
+  window.initWebSocket();
+  window.__ws.onmessage({
+    data: JSON.stringify({
+      event: 'telemetry', printer_id: 'n1',
+      data: {
+        gcode_state: 'RUNNING', subtask_name: 'Cube_plate_1.gcode.3mf', mc_percent: 40,
+        job: {
+          cur_stage: { idx: 2 },
+          stage: [
+            { idx: 92, name: 'Phone stand' }, { idx: 191, name: 'Cable clip' },
+            { idx: 192, name: 'Name tag' }, { idx: 193, name: 'Bracket' }
+          ]
+        }
+      }
+    })
+  });
+  await sleep(30);
+  check('control tab has the skip button', panel().innerHTML.includes('data-action="open-skip"'),
+    panel().innerHTML.slice(0, 120));
 
-const queued = Object.assign({}, p, { skippedIds: [3] });
-const queuedMarkup = window.controlHtml(queued);
-check('queued skip is marked', queuedMarkup.includes('skip queued'));
+  // opening from the Control tab button
+  click(panel().querySelector('[data-action="open-skip"]'));
+  await sleep(30);
+  check('skip modal opens from the Control tab',
+    !doc.getElementById('modal-skip').classList.contains('hidden'));
 
-const body = window.document.createElement('div');
-body.innerHTML = window.controlHtml(p);
-const before = body.querySelector('[data-live="skip-objects"]').dataset.sig;
+  const items = () => [...doc.querySelectorAll('#skip-bed [data-skip-id]')];
+  check('one toggle per object', items().length === 4, String(items().length));
+  check('normal objects are green/keep',
+    items().every((el) => el.getAttribute('class').indexOf('is-todo') >= 0),
+    items().map((el) => el.getAttribute('class')).join(','));
+  check('confirm is inert with nothing selected', doc.getElementById('skip-confirm').disabled);
 
-// telemetry advances by one object -> the list must follow
-const p2 = Object.assign({}, p);
-window.applyTelemetry(p2, {
-  gcode_state: 'RUNNING',
-  job: { cur_stage: { idx: 3 }, stage: p.objects.map((o) => ({ idx: o.id, name: o.name })) }
-});
-window.refreshLive(body, p2);
-const after = body.querySelector('[data-live="skip-objects"]').dataset.sig;
-check('signature changes as the printer advances', before !== after, `${before} -> ${after}`);
-check('panel now shows object 4 of 4', body.innerHTML.includes('Object 4 of 4'), '');
-check('queued skip is pruned once passed', (p2.skippedIds || []).length === 0, JSON.stringify(p2.skippedIds));
+  // toggle one on -> pending / red
+  click(doc.querySelector('#skip-bed [data-skip-id="191"]'));
+  await sleep(10);
+  check('selected object turns pending/red',
+    doc.querySelector('#skip-bed [data-skip-id="191"]').getAttribute('class').indexOf('is-pending') >= 0);
+  check('confirm reflects the pending count',
+    doc.getElementById('skip-confirm').textContent.includes('(1)'), doc.getElementById('skip-confirm').textContent);
+  check('confirm arms with a selection', !doc.getElementById('skip-confirm').disabled);
 
-/* --- s_obj-only firmware still produces a usable list -------------------- */
+  // toggle it off again
+  click(doc.querySelector('#skip-bed [data-skip-id="191"]'));
+  await sleep(10);
+  check('clicking a pending object unmarks it',
+    doc.querySelector('#skip-bed [data-skip-id="191"]').getAttribute('class').indexOf('is-todo') >= 0);
+  check('confirm disarms when nothing is pending', doc.getElementById('skip-confirm').disabled);
 
-const sObjOnly = Object.assign({}, base);
-window.applyTelemetry(sObjOnly, { gcode_state: 'RUNNING', s_obj: [0, 1, 2], mc_print_sub_stage: 1 });
-check('s_obj fallback builds a list', sObjOnly.objects.length === 3, sObjOnly.objects.length);
-check('s_obj fallback keeps ids', sObjOnly.objects[2].id === 2, sObjOnly.objects[2].id);
+  // select two and confirm
+  click(doc.querySelector('#skip-bed [data-skip-id="191"]'));
+  click(doc.querySelector('#skip-bed [data-skip-id="192"]'));
+  await sleep(10);
+  calls.length = 0;
+  click(doc.getElementById('skip-confirm'));
+  await sleep(40);
 
-/* --- the card puts the name and status above the camera ------------------ */
+  const sent = skipPost();
+  let ids = null;
+  try { ids = sent ? JSON.parse(sent.body).object_ids : null; } catch (_) { ids = null; }
+  check('one request carries exactly the selected ids',
+    Boolean(ids) && ids.length === 2 && ids.indexOf(191) >= 0 && ids.indexOf(192) >= 0 && ids.indexOf(92) < 0,
+    JSON.stringify(ids));
+  check('exactly one skip request is sent',
+    calls.filter((c) => c.url.indexOf('/skip-objects') >= 0).length === 1,
+    String(calls.filter((c) => c.url.indexOf('/skip-objects') >= 0).length));
+  check('modal closes after a successful skip',
+    doc.getElementById('modal-skip').classList.contains('hidden'));
 
-const root = window.document.createElement('div');
-window.document.body.appendChild(root);
-const card = window.createCard({ id: 'n1', name: 'X1C', ip: '1.2.3.4', sn: 'SN' });
-root.appendChild(card.root);
+  // reopening shows the skipped objects locked out
+  window.openSkipModal('n1', { path: '/Cube_plate_1.gcode.3mf', plate: 1 });
+  await sleep(20);
+  const skippedRect = doc.querySelector('#skip-bed [data-skip-id="191"]');
+  check('a skipped object is greyed', skippedRect.getAttribute('class').indexOf('is-skipped') >= 0,
+    skippedRect.getAttribute('class'));
+  check('a skipped object is disabled',
+    skippedRect.disabled === true || skippedRect.getAttribute('data-disabled') === '1',
+    skippedRect.getAttribute('data-disabled'));
 
-const order = [...card.root.querySelectorAll('[data-r]')].map((n) => n.dataset.r);
-const nameNode = card.root.querySelector('[data-r="name"]');
-const camNode = card.root.querySelector('[data-role="cam-box"]');
-check('card still exposes the name ref', order.indexOf('name') >= 0, order.join(','));
-check('name/status render before the camera in document order',
-  nameNode.compareDocumentPosition(camNode) === window.Node.DOCUMENT_POSITION_FOLLOWING,
-  `${nameNode.dataset.r} -> cam-box`);
-check('camera still inside the card', Boolean(camNode));
-check('status chip still present', Boolean(card.root.querySelector('[data-r="chip"]')));
-check('one card header only', card.root.querySelectorAll('[data-r="name"]').length === 1);
+  // clicking a locked object can never unskip it
+  calls.length = 0;
+  click(skippedRect);
+  await sleep(10);
+  check('a skipped object cannot be reselected',
+    doc.querySelector('#skip-bed [data-skip-id="191"]').getAttribute('class').indexOf('is-skipped') >= 0);
+  check('a skipped object does not arm confirm', doc.getElementById('skip-confirm').disabled);
+  check('clicking a skipped object sends nothing', !skipPost());
 
-console.log('\n' + pass + ' passed, ' + fail + ' failed');
-process.exit(fail ? 1 : 0);
+  // cancel never posts
+  click(doc.querySelector('#skip-bed [data-skip-id="193"]'));
+  await sleep(10);
+  calls.length = 0;
+  click(doc.getElementById('skip-cancel'));
+  await sleep(10);
+  check('cancel sends nothing', !skipPost());
+  check('cancel closes the modal', doc.getElementById('modal-skip').classList.contains('hidden'));
+
+  console.log('\n' + pass + ' passed, ' + fail + ' failed');
+  process.exit(fail ? 1 : 0);
+})().catch((err) => { console.log('ERROR ' + err.stack); process.exit(1); });

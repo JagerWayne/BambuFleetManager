@@ -1040,6 +1040,14 @@ input[type="color"].field::-moz-color-swatch {
   color: var(--accent);
 }
 
+/* skip modal toggles: green = keep, red = pending skip, grey = locked out */
+.obj-row.is-todo { border-color: var(--accent-line); }
+.obj-row.is-todo .obj-badge { background: var(--accent); color: var(--accent-fg); }
+.obj-row.is-pending { background: var(--danger-soft); border-color: var(--danger); }
+.obj-row.is-pending .obj-badge { background: var(--danger); color: var(--text-strong); }
+.obj-row.is-skipped { opacity: 0.5; border-style: dashed; }
+.obj-row.is-skipped .obj-title { text-decoration: line-through; }
+
 /* --- skip-object bed diagram: the printer's own skip screen, top-down --- */
 
 .bed-svg {
@@ -1074,6 +1082,12 @@ input[type="color"].field::-moz-color-swatch {
   stroke-dasharray: 4 3;
 }
 .bed-obj[data-disabled="1"] { pointer-events: none; opacity: 0.6; }
+
+/* skip modal states: green = keep, red = pending skip, grey = locked out */
+.bed-obj.is-todo { fill: var(--accent); stroke: var(--accent-hover); }
+.bed-obj.is-todo:hover { fill: var(--accent-hover); }
+.bed-obj.is-pending { fill: var(--danger); stroke: var(--danger); }
+.bed-obj.is-skipped { fill: var(--track); stroke: var(--line); }
 
 input[type="range"].slider {
   -webkit-appearance: none;
