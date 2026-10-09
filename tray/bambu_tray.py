@@ -176,6 +176,105 @@ def set_autostart(enabled: bool) -> None:
         log.warning("Could not update autostart: %s", exc)
 
 
+def fetch_diagnostics(port: int) -> str:
+    """GET /api/diagnostics from the local server (access codes already redacted server-side)."""
+    import urllib.request
+
+    headers = {}
+    token = str(read_settings().get("auth_token") or "")
+    if token:
+        headers["X-Auth-Token"] = token
+    url = f"http://127.0.0.1:{port}/api/diagnostics"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15) as r:
+        return r.read().decode("utf-8")
+
+
+def _copy_diagnostics(controller: ServerController) -> str:
+    """Write the support bundle to the data dir and try to put it on the clipboard."""
+    payload = fetch_diagnostics(controller.port)
+    path = os.path.join(DATA_DIR, "diagnostics.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+    try:
+        import subprocess
+
+        subprocess.run("clip", input=payload, text=True, shell=True, check=True,
+                       timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return f"Copied to clipboard and saved to {path}"
+    except Exception as exc:
+        return f"Saved to {path} (clipboard unavailable: {exc})"
+
+
+# ------------------------------------------------------------------- health
+
+
+HEALTH_INTERVAL = 30.0
+
+
+def _warning_icon_image():
+    """The normal icon with a red badge over the bottom-right corner."""
+    from PIL import ImageDraw
+
+    base = load_icon_image().convert("RGBA").resize((64, 64))
+    draw = ImageDraw.Draw(base)
+    draw.ellipse([42, 42, 62, 62], fill=(220, 38, 38, 255), outline=(255, 255, 255, 255), width=2)
+    return base
+
+
+class HealthMonitor:
+    """Pings /health on a timer and flips the tray icon when the server stops
+    answering - the only failure signal a headless, windowed app has."""
+
+    def __init__(self, controller: ServerController, icon) -> None:
+        self.controller = controller
+        self.icon = icon
+        self.up = True
+        self._wake = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="bfm-health", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self._wake.set()
+
+    def _probe(self) -> bool:
+        import urllib.request
+
+        url = f"http://127.0.0.1:{self.controller.port}/health"
+        headers = {}
+        token = str(read_settings().get("auth_token") or "")
+        if token:
+            headers["X-Auth-Token"] = token
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=5) as r:
+                return r.status == 200
+        except OSError:
+            return False
+
+    def _run(self) -> None:
+        while not self._wake.wait(HEALTH_INTERVAL):
+            if not self.controller.running:
+                continue  # stopped from the menu on purpose; the menu already says so
+            healthy = self._probe()
+            if healthy != self.up:
+                self.up = healthy
+                self._apply_state()
+                log.warning("Server %s", "recovered per /health" if healthy else "is not answering /health")
+
+    def _apply_state(self) -> None:
+        try:
+            if self.up:
+                self.icon.icon = load_icon_image()
+                self.icon.title = f"Bambu Fleet Manager v{app_version()}"
+            else:
+                self.icon.icon = _warning_icon_image()
+                self.icon.title = f"Bambu Fleet Manager v{app_version()} - server not responding"
+            self.icon.update_menu()
+        except Exception as exc:  # pragma: no cover - icon may be gone at shutdown
+            log.debug("Tray health update failed: %s", exc)
+
+
 # ------------------------------------------------------------------- runner
 
 
@@ -207,8 +306,19 @@ def _selftest() -> int:
     return 0 if ok else 1
 
 
-def _build_menu(pystray, controller: ServerController, icon, refresh) -> object:
-    """Assemble the tray menu, wiring each item to the controller."""
+def _diagnostics_note(controller: ServerController) -> str:
+    """Collect diagnostics and return a short human-readable outcome."""
+    try:
+        note = _copy_diagnostics(controller)
+        log.info("%s", note)
+        return note
+    except Exception as exc:
+        log.warning("Could not collect diagnostics: %s", exc)
+        return "diagnostics failed"
+
+
+def _menu_handlers(controller: ServerController, icon, refresh) -> dict:
+    """The callback behind every tray menu item."""
 
     def on_open(icon_, _item):
         webbrowser.open(controller.dashboard_url())
@@ -237,9 +347,30 @@ def _build_menu(pystray, controller: ServerController, icon, refresh) -> object:
         except OSError:
             pass
 
+    def on_copy_diagnostics(icon_, _item):
+        icon_.title = "Bambu Fleet Manager - collecting diagnostics..."
+        icon_.title = f"Bambu Fleet Manager - {_diagnostics_note(controller)[:60]}"
+        refresh()
+
     def on_exit(icon_, _item):
         controller.stop()
         icon.stop()
+
+    return {
+        "open": on_open,
+        "start": on_start,
+        "stop": on_stop,
+        "restart": on_restart,
+        "autostart": on_toggle_autostart,
+        "data": on_open_data,
+        "diagnostics": on_copy_diagnostics,
+        "exit": on_exit,
+    }
+
+
+def _build_menu(pystray, controller: ServerController, icon, refresh) -> object:
+    """Assemble the tray menu, wiring each item to the controller."""
+    h = _menu_handlers(controller, icon, refresh)
 
     def status_text(_item) -> str:
         if controller.running:
@@ -249,15 +380,16 @@ def _build_menu(pystray, controller: ServerController, icon, refresh) -> object:
     return pystray.Menu(
         pystray.MenuItem(status_text, None, enabled=False),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Open dashboard", on_open, default=True),
-        pystray.MenuItem("Start server", on_start, enabled=lambda _i: not controller.running),
-        pystray.MenuItem("Stop server", on_stop, enabled=lambda _i: controller.running),
-        pystray.MenuItem("Restart server", on_restart, enabled=lambda _i: controller.running),
+        pystray.MenuItem("Open dashboard", h["open"], default=True),
+        pystray.MenuItem("Start server", h["start"], enabled=lambda _i: not controller.running),
+        pystray.MenuItem("Stop server", h["stop"], enabled=lambda _i: controller.running),
+        pystray.MenuItem("Restart server", h["restart"], enabled=lambda _i: controller.running),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Start with Windows", on_toggle_autostart, checked=lambda _i: is_autostart_enabled()),
-        pystray.MenuItem("Open data folder", on_open_data),
+        pystray.MenuItem("Start with Windows", h["autostart"], checked=lambda _i: is_autostart_enabled()),
+        pystray.MenuItem("Open data folder", h["data"]),
+        pystray.MenuItem("Copy diagnostics", h["diagnostics"], enabled=lambda _i: controller.running),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Exit", on_exit),
+        pystray.MenuItem("Exit", h["exit"]),
     )
 
 
@@ -294,9 +426,12 @@ def main() -> int:
 
     controller.start()
     log.info("Tray started (v%s)", app_version())
+    monitor = HealthMonitor(controller, icon)
+    monitor.start()
     try:
         icon.run()
     finally:
+        monitor.stop()
         controller.stop()
         log.info("Tray exiting")
     return 0
