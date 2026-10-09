@@ -51,7 +51,11 @@ if (-not (Test-Path $py)) {
     $py = Join-Path $root '.venv\Scripts\python.exe'
 }
 Info 'Ensuring build dependencies ...'
-if ((Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--quiet', '-r', 'requirements-dev.txt')) -ne 0) {
+# Prefer the pinned lockfile so the installer matches what CI tested;
+# fall back to the floor manifest when the lock has not been generated.
+$runtimeReqs = 'requirements.txt'
+if (Test-Path (Join-Path $root 'requirements.lock')) { $runtimeReqs = 'requirements.lock' }
+if ((Invoke-Native $py @('-m', 'pip', 'install', '--disable-pip-version-check', '--quiet', '-r', $runtimeReqs, '-r', 'requirements-dev.txt')) -ne 0) {
     Fail 'dependency installation failed.'
 }
 
