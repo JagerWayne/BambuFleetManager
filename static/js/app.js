@@ -17,7 +17,7 @@ const state = {
   selectedId: null,
   speedModalPrinter: null,
   cameraEnabled: true,
-  print: { printerId: null, path: null, plan: null, plate: 1, mapping: {} },
+  print: { printerId: null, path: null, plan: null, plate: 1, mapping: {}, opts: null },
   // full path of the file each printer is running, so the skip bed can find it
   printPath: {},
   // plate geometry per "path|plate"; null means "tried, unavailable" so we do not refetch
@@ -3023,13 +3023,17 @@ function renderPrintDialog() {
   // options. Honest copy: homing always happens at print start (the printer
   // and the file's own start G-code home the machine); these switches gate the
   // calibration routines only - no dashboard flag can suppress file G-code.
+  // `checked` comes from state.print.opts so a re-render never resets the user.
+  const opt = state.print.opts || {};
+  const optBox = (name, label) =>
+    `<label class="flex items-center gap-2"><input type="checkbox" data-opt="${name}" class="accent-bambu"${opt[name] === false ? '' : ' checked'}> ${label}</label>`;
   $('print-options').innerHTML = `
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="use_ams" class="accent-bambu" checked> Use AMS mapping</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="bed_levelling" class="accent-bambu" checked> Bed levelling (auto bed leveling)</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="flow_cali" class="accent-bambu" checked> Flow calibration</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="vibration_cali" class="accent-bambu" checked> Vibration compensation</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="timelapse" class="accent-bambu" checked> Timelapse</label>
-    <label class="flex items-center gap-2"><input type="checkbox" data-opt="layer_inspect" class="accent-bambu" checked> First-layer inspection</label>
+    ${optBox('use_ams', 'Use AMS mapping')}
+    ${optBox('bed_levelling', 'Bed levelling (auto bed leveling)')}
+    ${optBox('flow_cali', 'Flow calibration')}
+    ${optBox('vibration_cali', 'Vibration compensation')}
+    ${optBox('timelapse', 'Timelapse')}
+    ${optBox('layer_inspect', 'First-layer inspection')}
     <p class="print-options-note">The printer always homes at print start — its start G-code commands it, so homing cannot be turned off here. These switches control the calibration routines (bed levelling, flow, vibration) and extras, not homing.</p>`;
 }
 
@@ -3077,7 +3081,12 @@ function renderTrayPicker() {
 
 async function openPrintDialog(printerId, path) {
   const printer = printerById(printerId);
-  state.print = { printerId, path, plan: null, plate: 1, mapping: {} };
+  state.print = {
+    printerId, path, plan: null, plate: 1, mapping: {},
+    // The dialog's checkboxes are a model, not DOM-only state: re-renders
+    // (skip arm refresh, tray pick) must not wipe the user's choices.
+    opts: { use_ams: true, bed_levelling: true, flow_cali: true, vibration_cali: true, timelapse: true, layer_inspect: true },
+  };
   $('print-sub').textContent = `${printer ? printer.name : ''}`;
   $('print-info').textContent = 'reading the project…';
   $('print-filaments').innerHTML = '';
@@ -3102,11 +3111,14 @@ function closePrintDialog() { $('modal-print').classList.replace('flex', 'hidden
 async function startPrintFromDialog() {
   const { printerId, plan, plate } = state.print;
   if (!plan) return;
-  const opt = (name, fallback) => {
+  // Read the options from the model (the DOM is only a fallback so a stray
+  // re-render can never silently change what gets sent).
+  const opt = (name) => {
+    if (state.print.opts && state.print.opts[name] !== undefined) return state.print.opts[name];
     const el = $('print-options').querySelector(`[data-opt="${name}"]`);
-    return el ? el.checked : fallback;
+    return el ? el.checked : true;
   };
-  const useAms = opt('use_ams', true);
+  const useAms = opt('use_ams');
   const info = (plan.plates || []).find((p) => p.index === plate) || {};
   const mapping = (info.filaments || []).map((f) => state.print.mapping[f.id] ?? -1);
   // A selection armed before the print started is sent WITH the print request,
@@ -3123,11 +3135,11 @@ async function startPrintFromDialog() {
         plate_index: plate,
         use_ams: useAms,
         ams_mapping: useAms && mapping.length ? mapping : null,
-        bed_levelling: opt('bed_levelling', true),
-        layer_inspect: opt('layer_inspect', true),
-        flow_cali: opt('flow_cali', true),
-        vibration_cali: opt('vibration_cali', true),
-        timelapse: opt('timelapse', true),
+        bed_levelling: opt('bed_levelling'),
+        layer_inspect: opt('layer_inspect'),
+        flow_cali: opt('flow_cali'),
+        vibration_cali: opt('vibration_cali'),
+        timelapse: opt('timelapse'),
         skip_object_ids: skipIds.length ? skipIds : null,
       })
     });
@@ -3184,6 +3196,13 @@ function wireStatic() {
     const b = e.target.closest('[data-action="pick-tray"]');
     if (b) openTrayPicker(Number(b.dataset.filament));
   });
+  // Write the checkboxes back into the model so re-renders keep the user's
+  // choices (a delegated listener survives the innerHTML rebuilds).
+  $('print-options').addEventListener('change', (e) => {
+    const el = e.target.closest('[data-opt]');
+    if (!el || !state.print || !state.print.opts) return;
+    state.print.opts[el.dataset.opt] = el.checked;
+  });
   $('tray-options').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tray-option]');
     if (!b || !state.trayPicker) return;
@@ -3230,7 +3249,7 @@ function wireStatic() {
 
   // SD upload from the system tab
   document.addEventListener('change', async (e) => {
-    const role = e.target.dataset.role;
+    const role = e.target.dataset.role || '';
 
     // Files tab: sort + type filter
     if (role === 'files-sort' || role === 'files-filter') {
